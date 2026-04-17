@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: videos (title, thumbnail, category, videoUrl, authorId)
+    // Collection: users (uid, email, roleIds)
+    // Collection: roles (name, permissions)
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && request.auth.token.email == "khizarabbaskharal55@gmail.com";
+    }
+
+    // Matches for videos
+    match /videos/{videoId} {
+      allow read: if true;
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isSuperAdmin());
+    }
+
+    // Matches for user profiles
+    match /users/{userId} {
+      allow read, write: if isOwner(userId) || isSuperAdmin();
+    }
+
+    // Matches for roles
+    match /roles/{roleId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+  }
+}

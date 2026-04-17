@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "Video": {
+      "title": "Video",
+      "description": "Represents a video content entry.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "The title of the video." },
+        "thumbnail": { "type": "string", "description": "URL to the video thumbnail image." },
+        "category": { "type": "string", "enum": ["Movies", "Anime", "Web Series"], "description": "Content category." },
+        "videoUrl": { "type": "string", "description": "Direct URL or storage path to the video file." },
+        "description": { "type": "string", "description": "Detailed description of the video." },
+        "isPremium": { "type": "boolean", "description": "Whether the video requires an ad to unlock." },
+        "authorId": { "type": "string", "description": "The UID of the user who uploaded the video." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when the video was created." }
+      },
+      "required": ["title", "thumbnail", "category", "videoUrl", "authorId"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Extended user information stored in Firestore.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The Firebase Auth UID." },
+        "email": { "type": "string", "format": "email", "description": "User email address." },
+        "roleIds": { "type": "array", "items": { "type": "string" }, "description": "List of role IDs assigned to the user." },
+        "unlockedVideos": { "type": "array", "items": { "type": "string" }, "description": "List of premium video IDs unlocked by the user." }
+      },
+      "required": ["uid", "email"]
+    },
+    "Role": {
+      "title": "Role",
+      "description": "A set of permissions that can be assigned to users.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The name of the role (e.g., Moderator)." },
+        "permissions": { "type": "array", "items": { "type": "string" }, "description": "List of permission tags." },
+        "color": { "type": "string", "description": "The UI color assigned to this role." }
+      },
+      "required": ["name", "permissions"]
+    }
+  },
+  "firestore": {
+    "/videos/{videoId}": {
+      "schema": { "$ref": "Video" },
+      "description": "Collection of available videos."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "UserProfile" },
+      "description": "Private user profile and settings."
+    },
+    "/roles/{roleId}": {
+      "schema": { "$ref": "Role" },
+      "description": "Administrative roles and permissions."
+    }
+  }
+}

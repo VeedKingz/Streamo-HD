@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">StreamoHD</string>
+    <string name="title_activity_main">StreamoHD</string>
+    <string name="package_name">com.streamohd.app</string>
+    <string name="custom_url_scheme">com.streamohd.app</string>
+</resources>
