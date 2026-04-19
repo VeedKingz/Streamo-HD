@@ -1,10 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, X, Film, Tv, MonitorPlay, Search as SearchIcon, User, LogIn, LogOut, LayoutDashboard, PlayCircle, Shield, Users, Trash2, CheckCircle2, Edit2, Search } from 'lucide-react';
-import { collection, onSnapshot, query, addDoc, serverTimestamp, doc, setDoc, getDoc, updateDoc, arrayUnion, deleteDoc, getDocs, where, getDocFromServer } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
-import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from 'firebase/auth';
-import { auth, db, storage } from './lib/firebase';
-import firebaseConfig from '../firebase-applet-config.json';
+import { Plus, X, Film, Tv, MonitorPlay, Search as SearchIcon, User, LogIn, LogOut, LayoutDashboard, PlayCircle, Shield, Users, Trash2, CheckCircle2, Edit2, AlertTriangle, Settings } from 'lucide-react';
+import { supabase, getSupabaseConfig } from './lib/supabase';
 import { Video, Category, UserProfile, Role, Permission } from './types';
 import CategoryRow from './components/CategoryRow';
 import VideoCard from './components/VideoCard';
@@ -22,23 +18,13 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showAdmin, setShowAdmin] = useState(false);
   const [adminTab, setAdminTab] = useState<'content' | 'roles' | 'users'>('content');
-  const [loading, setLoading] = useState(true);
-  const [firestoreError, setFirestoreError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [backendError, setBackendError] = useState<string | null>(null);
 
-  const handleFirestoreError = (error: any, operation: string, path: string) => {
-    const errorInfo = {
-      error: error.message || String(error),
-      operation,
-      path,
-      auth: {
-        loggedIn: !!auth.currentUser,
-        uid: auth.currentUser?.uid,
-        email: auth.currentUser?.email
-      }
-    };
-    console.error("Firestore Error:", JSON.stringify(errorInfo, null, 2));
-    setFirestoreError(error.message);
-    throw error;
+  const handleBackendError = (error: any, operation: string) => {
+    console.error(`Supabase Error [${operation}]:`, error);
+    setBackendError(error.message || String(error));
   };
 
   // Upload States
@@ -64,68 +50,150 @@ export default function App() {
   const [userToEdit, setUserToEdit] = useState<UserProfile | null>(null);
   const [roleToDelete, setRoleToDelete] = useState<string | null>(null);
 
+  // Auth Modal State
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authForm, setAuthForm] = useState({ email: '', password: '' });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Profile Menu State
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [deleteConfirmTimer, setDeleteConfirmTimer] = useState<number | null>(null);
+  const [editProfileForm, setEditProfileForm] = useState({ displayName: '', username: '', bio: '', avatarUrl: '' });
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
+  const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
+
   useEffect(() => {
-    // Test connection
-    const testConnection = async () => {
+    const initApp = async () => {
+      // Safety timeout to prevent infinite loading
+      const timeout = setTimeout(() => {
+        setIsInitializing(false);
+      }, 10000);
+
       try {
-        await getDocFromServer(doc(db, '_connection_test', 'status'));
-      } catch (error: any) {
-        if (error.message.includes('offline')) {
-          console.warn("Firestore connection check failed: Client is offline. This usually indicates a Firebase configuration issue.");
-          setFirestoreError("The application is unable to connect to the database. Please check your Firebase configuration.");
+        // 1. Get initial session
+        const { data: { session }, error: authError } = await supabase.auth.getSession();
+        if (authError) throw authError;
+
+        const u = session?.user ?? null;
+        setUser(u);
+        
+        // 2. Load context-specific data
+        const promises: Promise<any>[] = [fetchVideos()];
+        
+        if (u) {
+          promises.push(fetchUserProfile(u.id, u.email!));
+          promises.push(fetchRoles());
         }
+
+        await Promise.allSettled(promises);
+      } catch (err) {
+        handleBackendError(err, 'INIT_APP');
+      } finally {
+        clearTimeout(timeout);
+        setIsInitializing(false);
       }
     };
-    testConnection();
 
-    // Listen for videos
-    const q = query(collection(db, 'videos'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setVideos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Video[]);
-      setLoading(false);
-    }, (error) => handleFirestoreError(error, 'LIST', 'videos'));
+    initApp();
 
-    // Listen for roles
-    const rolesUnsubscribe = onSnapshot(collection(db, 'roles'), (snapshot) => {
-      setRoles(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Role[]);
-    }, (error) => handleFirestoreError(error, 'LIST', 'roles'));
-
-    // Auth listener
-    const authUnsubscribe = onAuthStateChanged(auth, async (u) => {
+    // Listen for auth changes
+    const { data: { subscription: authListener } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
       if (u) {
-        setUser(u);
-        const docRef = doc(db, 'users', u.uid);
-        try {
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            setUserProfile(docSnap.data() as UserProfile);
-          } else {
-            const newProfile: UserProfile = {
-              uid: u.uid,
-              email: u.email || '',
-              roleIds: [],
-              unlockedVideos: []
-            };
-            await setDoc(docRef, newProfile);
-            setUserProfile(newProfile);
-          }
-        } catch (error) {
-          handleFirestoreError(error, 'GET/SET', `users/${u.uid}`);
-        }
+        await Promise.allSettled([
+          fetchUserProfile(u.id, u.email!),
+          fetchRoles()
+        ]);
       } else {
-        setUser(null);
         setUserProfile(null);
+        setRoles([]); // Clear roles for guests
       }
     });
 
+    // Real-time subscriptions
+    const videosChannel = supabase
+      .channel('videos-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'videos' }, fetchVideos)
+      .subscribe();
+
+    const rolesChannel = supabase
+      .channel('roles-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'roles' }, fetchRoles)
+      .subscribe();
+
     return () => {
-      unsubscribe();
-      rolesUnsubscribe();
-      authUnsubscribe();
+      authListener.unsubscribe();
+      supabase.removeChannel(videosChannel);
+      supabase.removeChannel(rolesChannel);
     };
   }, []);
 
-  const isSuperAdmin = user?.email === 'khizarabbaskharal55@gmail.com';
+  // Click outside to close profile menu
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.profile-menu-container')) {
+        setShowProfileMenu(false);
+      }
+    };
+
+    if (showProfileMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showProfileMenu]);
+
+  const fetchVideos = async () => {
+    try {
+      const { data, error } = await supabase.from('videos').select('*').order('created_at', { ascending: false });
+      if (error) throw error;
+      setVideos((data as Video[]) || []);
+    } catch (error) {
+      handleBackendError(error, 'FETCH_VIDEOS');
+    }
+  };
+
+  const fetchRoles = async () => {
+    try {
+      const { data, error } = await supabase.from('roles').select('*');
+      if (error) throw error;
+      setRoles((data as Role[]) || []);
+    } catch (error) {
+      handleBackendError(error, 'FETCH_ROLES');
+    }
+  };
+
+  const fetchUserProfile = async (uid: string, email: string) => {
+    try {
+      const { data, error } = await supabase.from('profiles').select('*').eq('uid', uid).single();
+      if (error && error.code !== 'PGRST116') { // PGRST116 is code for no rows found
+        throw error;
+      } else if (data) {
+        setUserProfile(data as UserProfile);
+      } else {
+        // Create profile if missing
+        const newProfile: UserProfile = {
+          uid,
+          email,
+          displayName: email.split('@')[0],
+          roleIds: [],
+          unlockedVideos: []
+        };
+        const { error: insertError } = await supabase.from('profiles').insert([newProfile]);
+        if (insertError) throw insertError;
+        setUserProfile(newProfile);
+      }
+    } catch (error) {
+      handleBackendError(error, 'FETCH_PROFILE');
+    }
+  };
+
+  const isSuperAdmin = user?.email === 'khizarabbaskharal55@gmail.com' || user?.email === 'uniqueofficial6767@gmail.com';
 
   const hasPermission = (permission: Permission) => {
     if (isSuperAdmin) return true;
@@ -140,13 +208,9 @@ export default function App() {
 
   const fetchUsers = async () => {
     if (!hasPermission('MANAGE_ROLES')) return;
-    const q = query(collection(db, 'users'));
-    try {
-      const snap = await getDocs(q);
-      setAllUsers(snap.docs.map(d => ({ ...d.data() } as UserProfile)));
-    } catch (error) {
-      handleFirestoreError(error, 'GET_DOCS', 'users');
-    }
+    const { data, error } = await supabase.from('profiles').select('*');
+    if (error) handleBackendError(error, 'FETCH_USERS');
+    else setAllUsers(data as UserProfile[]);
   };
 
   useEffect(() => {
@@ -161,21 +225,24 @@ export default function App() {
     
     try {
       if (editingRoleId) {
-        await updateDoc(doc(db, 'roles', editingRoleId), newRole);
+        const { error } = await supabase.from('roles').update(newRole).eq('id', editingRoleId);
+        if (error) throw error;
         setEditingRoleId(null);
       } else {
-        await addDoc(collection(db, 'roles'), newRole);
+        const { error } = await supabase.from('roles').insert([newRole]);
+        if (error) throw error;
       }
       setNewRole({ name: '', permissions: [], color: '#E50914' });
     } catch (error) {
-      handleFirestoreError(error, 'WRITE', editingRoleId ? `roles/${editingRoleId}` : 'roles');
+      handleBackendError(error, 'WRITE_ROLE');
     }
   };
 
   const handleDeleteRole = async (roleId: string) => {
     if (!hasPermission('MANAGE_ROLES')) return;
     try {
-      await deleteDoc(doc(db, 'roles', roleId));
+      const { error } = await supabase.from('roles').delete().eq('id', roleId);
+      if (error) throw error;
       setRoleToDelete(null);
     } catch (error) {
       console.error("Error deleting role:", error);
@@ -187,7 +254,7 @@ export default function App() {
     const video = videos.find(v => v.id === videoId);
     if (!video) return;
 
-    const canDelete = hasPermission('MANAGE_UPLOADS') || video.authorId === user?.uid;
+    const canDelete = hasPermission('MANAGE_UPLOADS') || video.authorId === user?.id;
     if (!canDelete) {
       alert("You don't have permission to delete this video.");
       return;
@@ -195,7 +262,8 @@ export default function App() {
 
     if (!confirm('Permanently delete this video?')) return;
     try {
-      await deleteDoc(doc(db, 'videos', videoId));
+      const { error } = await supabase.from('videos').delete().eq('id', videoId);
+      if (error) throw error;
     } catch (error) {
       console.error("Delete error:", error);
       alert("Delete failed. Check your permissions.");
@@ -204,17 +272,158 @@ export default function App() {
 
   const handleUpdateUserRoles = async (uid: string, roleIds: string[]) => {
     if (!hasPermission('MANAGE_ROLES')) return;
-    await updateDoc(doc(db, 'users', uid), { roleIds });
-    fetchUsers();
-    alert('Roles updated');
+    const { error } = await supabase.from('profiles').update({ roleIds }).eq('uid', uid);
+    if (error) handleBackendError(error, 'UPDATE_USER_ROLES');
+    else {
+      fetchUsers();
+      alert('Roles updated');
+    }
   };
 
-  const handleLogin = async () => {
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError(null);
+    let isRequesting = true;
+
+    // Timeout for auth
+    const authTimeout = setTimeout(() => {
+      if (isRequesting) {
+        setAuthLoading(false);
+        setAuthError("Authentication timed out. Please check your connection.");
+      }
+    }, 15000);
+
     try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      if (authMode === 'signup') {
+        const { error } = await supabase.auth.signUp({
+          email: authForm.email,
+          password: authForm.password,
+        });
+        if (error) throw error;
+        setAuthLoading(false);
+        alert('Account created! Please check your email for a verification link if required, then sign in.');
+        setAuthMode('signin');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: authForm.email,
+          password: authForm.password,
+        });
+        if (error) throw error;
+        setAuthLoading(false);
+        setShowAuthModal(false);
+      }
+    } catch (error: any) {
+      setAuthError(error.message);
+    } finally {
+      isRequesting = false;
+      clearTimeout(authTimeout);
+      setAuthLoading(false);
+    }
+  };
+
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    setIsUpdatingProfile(true);
+
+    try {
+      // 1. Username and Bio Validation
+      const username = editProfileForm.username.toLowerCase().trim();
+      if (username && !/^[a-z0-9_]*$/.test(username)) {
+        throw new Error("Username can only contain lowercase letters, numbers, and underscores.");
+      }
+      
+      if (editProfileForm.bio.length > 5000) {
+        throw new Error("Bio cannot exceed 5,000 characters.");
+      }
+
+      // 2. Uniqueness Check for Username
+      if (username && username !== userProfile?.username) {
+        const { data: existingUser, error: checkError } = await supabase
+          .from('profiles')
+          .select('username')
+          .eq('username', username)
+          .maybeSingle();
+        
+        if (checkError) throw checkError;
+        if (existingUser) throw new Error("This username is already taken.");
+      }
+
+      let finalAvatarUrl = editProfileForm.avatarUrl;
+
+      // 3. Avatar Upload (Handling as base64 for simplicity in this proto, or URL if provided)
+      // Note: Ideally use supabase.storage, but since we don't have a bucket set up via UI, 
+      // we'll stick to text fields or data-uris for this cinemative prototype.
+      if (avatarFile) {
+        // Mocking a successful upload for the prototype feel
+        const reader = new FileReader();
+        const base64Promise = new Promise((resolve) => {
+          reader.onloadend = () => resolve(reader.result);
+          reader.readAsDataURL(avatarFile);
+        });
+        finalAvatarUrl = (await base64Promise) as string;
+      }
+
+      // 4. Update Profile
+      const updateData = {
+        displayName: editProfileForm.displayName,
+        username: username || null,
+        bio: editProfileForm.bio,
+        avatarUrl: finalAvatarUrl
+      };
+
+      const { error } = await supabase.from('profiles').update(updateData).eq('uid', user.id);
+      if (error) throw error;
+      
+      setUserProfile(prev => prev ? { ...prev, ...updateData } : null);
+      setShowEditProfile(false);
+      alert('Profile updated successfully!');
+    } catch (error: any) {
+      alert(error.message || "Failed to update profile.");
+    } finally {
+      setIsUpdatingProfile(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      // Small local loading indicator if needed, but not the global one
+      await supabase.auth.signOut();
     } catch (error) {
-      console.error("Login error:", error);
+      console.error("Logout error (non-fatal):", error);
+    } finally {
+      // Clear JS states (optional since redirect wipes them)
+      setUser(null);
+      setUserProfile(null);
+      setRoles([]);
+      setShowProfileMenu(false);
+      
+      // Full redirect is mandatory to reset the auth listener state
+      window.location.href = window.location.origin;
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!user) return;
+    try {
+      // 1. Delete user profile and associated data (Cascade from DB handles comments)
+      const { error: profileError } = await supabase.from('profiles').delete().eq('uid', user.id);
+      if (profileError) throw profileError;
+      
+      // 2. Sign Out
+      await supabase.auth.signOut();
+      
+      // 3. Clear State & Inform
+      setUser(null);
+      setUserProfile(null);
+      setRoles([]);
+      alert('Your account and identity have been permanently deleted.');
+      
+      // 4. Force Reload to Landing
+      window.location.href = window.location.origin;
+    } catch (error) {
+      handleBackendError(error, 'DELETE_ACCOUNT');
     }
   };
 
@@ -239,14 +448,20 @@ export default function App() {
 
   const handleAdComplete = async () => {
     if (showAdFor && user) {
-      const userRef = doc(db, 'users', user.uid);
-      await updateDoc(userRef, {
-        unlockedVideos: arrayUnion(showAdFor.id)
-      });
+      const updatedUnlocked = [...(userProfile?.unlockedVideos || []), showAdFor.id];
+      const { error } = await supabase.from('profiles').update({
+        unlockedVideos: updatedUnlocked
+      }).eq('uid', user.id);
+      
+      if (error) {
+        handleBackendError(error, 'UNLOCK_VIDEO');
+        return;
+      }
+
       // Update local state
       setUserProfile(prev => prev ? {
         ...prev,
-        unlockedVideos: [...prev.unlockedVideos, showAdFor.id]
+        unlockedVideos: updatedUnlocked
       } : null);
       
       const videoToPlay = showAdFor;
@@ -255,28 +470,28 @@ export default function App() {
     }
   };
 
-  const uploadFile = (file: File, type: 'thumbnail' | 'video'): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const storageRef = ref(storage, `${type === 'thumbnail' ? 'thumbnails' : 'videos'}/${Date.now()}_${file.name}`);
-      const uploadTask = uploadBytesResumable(storageRef, file);
+  const uploadFile = async (file: File, type: 'thumbnail' | 'video'): Promise<string> => {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+    const filePath = `${type === 'thumbnail' ? 'thumbnails' : 'videos'}/${fileName}`;
 
-      uploadTask.on(
-        'state_changed',
-        (snapshot) => {
-          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          setUploadProgress(prev => ({ ...prev, [type]: progress }));
-        },
-        (error) => {
-          console.error("Upload error:", error);
-          reject(error);
-        },
-        () => {
-          getDownloadURL(uploadTask.snapshot.ref).then((downloadURL) => {
-            resolve(downloadURL);
-          });
-        }
-      );
-    });
+    // Note: This simplified version doesn't handle progress easily with standard upload
+    // but we'll simulate the UI state for the user's benefit
+    setUploadProgress(prev => ({ ...prev, [type]: 10 }));
+    
+    const { data, error } = await supabase.storage
+      .from('media') // Assumes a 'media' bucket exists
+      .upload(filePath, file);
+
+    if (error) throw error;
+    
+    setUploadProgress(prev => ({ ...prev, [type]: 100 }));
+    
+    const { data: { publicUrl } } = supabase.storage
+      .from('media')
+      .getPublicUrl(filePath);
+      
+    return publicUrl;
   };
 
   const handleAddVideo = async (e: React.FormEvent) => {
@@ -292,13 +507,15 @@ export default function App() {
       const thumbUrl = await uploadFile(thumbnailFile, 'thumbnail');
       const vidUrl = await uploadFile(videoFile, 'video');
 
-      await addDoc(collection(db, 'videos'), {
+      const { error } = await supabase.from('videos').insert([{
         ...newVideo,
         thumbnail: thumbUrl,
         videoUrl: vidUrl,
-        authorId: user.uid,
-        createdAt: serverTimestamp()
-      });
+        authorId: user.id,
+        created_at: new Date().toISOString()
+      }]);
+
+      if (error) throw error;
 
       setNewVideo({
         title: '',
@@ -326,39 +543,113 @@ export default function App() {
 
   const categories: Category[] = ['Movies', 'Anime', 'Web Series'];
 
-  // Check if Firebase is initialized correctly
-  const isConfigValid = !firebaseConfig.apiKey.startsWith('REPLACE_');
+  const [manualConfig, setManualConfig] = useState(getSupabaseConfig());
+  const [showConfigModal, setShowConfigModal] = useState(false);
 
-  if (loading && !firestoreError) {
+  const saveConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    localStorage.setItem('supabase_url', manualConfig.url || '');
+    localStorage.setItem('supabase_anon_key', manualConfig.key || '');
+    window.location.reload(); // Refresh to re-initialize the client
+  };
+
+  // Check if configuration is present
+  const isConfigValid = !!manualConfig.url && !!manualConfig.key;
+
+  const resetConfig = () => {
+    localStorage.removeItem('supabase_url');
+    localStorage.removeItem('supabase_anon_key');
+    window.location.reload();
+  };
+
+  if (isInitializing && isConfigValid && !backendError) {
     return (
       <div className="min-h-screen bg-brand-bg flex items-center justify-center">
-        <div className="w-12 h-12 border-4 border-brand-accent border-t-transparent rounded-full animate-spin" />
+        <div className="relative flex flex-col items-center gap-12 text-center">
+          <div className="relative">
+            <div className="w-16 h-16 border-4 border-white/5 rounded-full" />
+            <div className="absolute inset-0 w-16 h-16 border-4 border-brand-accent border-t-transparent rounded-full animate-spin" />
+          </div>
+          <div className="space-y-6">
+            <p className="text-[10px] text-brand-muted uppercase font-black tracking-widest animate-pulse">Initializing StreamoHD</p>
+            <button 
+              onClick={() => setIsInitializing(false)}
+              className="text-[9px] bg-white/5 hover:bg-white/10 text-zinc-500 hover:text-white px-6 py-2 rounded-full border border-white/10 transition-all uppercase tracking-widest"
+            >
+              Bypass Loading
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
 
-  if (!isConfigValid || firestoreError) {
+  if (!isConfigValid || backendError) {
     return (
       <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center p-8 text-center bg-[radial-gradient(circle_at_center,_var(--color-brand-surface)_0%,_transparent_100%)]">
         <div className="max-w-md space-y-8">
           <h1 className="text-brand-accent text-5xl font-black font-serif tracking-tight uppercase">
             Streamo<span className="text-white">HD</span>
           </h1>
-          <div className="space-y-4">
-            <h2 className="text-2xl font-bold font-serif">{firestoreError ? "Connection Error" : "Setup Required"}</h2>
-            <p className="text-brand-muted text-sm leading-relaxed">
-              {firestoreError || "To allow users to sign in and watch videos, you need to provide your Firebase credentials."}
-            </p>
-          </div>
-          <div className="p-4 bg-brand-accent/10 rounded border border-brand-accent/20 space-y-2">
-            <p className="text-xs text-brand-accent font-bold uppercase tracking-wider">Troubleshooting</p>
-            <p className="text-[11px] text-zinc-400">
-              {firestoreError 
-                ? "This usually means the Firebase project ID or API Key is incorrect. Try running the 'set_up_firebase' tool again."
-                : "Open the project settings to configure your Environment Variables."}
-            </p>
-          </div>
-          <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-bold">Error Trace ID: {Math.random().toString(36).substring(7)}</p>
+          
+          <form onSubmit={saveConfig} className="bg-brand-surface p-6 rounded-xl border border-white/10 shadow-2xl space-y-6 text-left">
+            <div className="space-y-4 text-center">
+              <h2 className="text-xl font-bold font-serif">{backendError ? "Backend Connection Issue" : "Supabase Quick Setup"}</h2>
+              <p className="text-brand-muted text-xs leading-relaxed">
+                Enter your Supabase credentials below to connect your streaming database. these are stored locally in your browser.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Project URL</label>
+                <input 
+                  type="url"
+                  placeholder="https://your-project.supabase.co"
+                  required
+                  className="w-full bg-white/5 border border-white/10 rounded p-3 text-sm focus:border-brand-accent outline-none transition-colors"
+                  value={manualConfig.url || ''}
+                  onChange={e => setManualConfig({...manualConfig, url: e.target.value})}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Anon API Key</label>
+                <input 
+                  type="password"
+                  placeholder="your-anon-key"
+                  required
+                  className="w-full bg-white/5 border border-white/10 rounded p-3 text-sm focus:border-brand-accent outline-none transition-colors"
+                  value={manualConfig.key || ''}
+                  onChange={e => setManualConfig({...manualConfig, key: e.target.value})}
+                />
+              </div>
+            </div>
+
+            <button 
+              type="submit"
+              className="w-full bg-brand-accent hover:bg-brand-accent/90 py-3 rounded font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20"
+            >
+              Connect Database
+            </button>
+
+            <div className="p-3 bg-brand-accent/5 rounded border border-brand-accent/10">
+              <p className="text-[10px] text-zinc-400 text-center leading-tight">
+                Get these keys from your Supabase Dashboard under <br/> 
+                <span className="text-brand-accent font-bold">Settings &gt; API</span>
+              </p>
+            </div>
+
+            <button 
+              type="button"
+              onClick={resetConfig}
+              className="w-full text-[10px] text-zinc-500 hover:text-white transition-colors uppercase tracking-widest font-bold"
+            >
+              Reset Configuration
+            </button>
+          </form>
+
+          <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-bold">SQL Setup required: ensure your tables exist!</p>
         </div>
       </div>
     );
@@ -379,7 +670,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex-1 flex items-center justify-end gap-2 sm:gap-4 overflow-hidden">
+        <div className="flex-1 flex items-center justify-end gap-2 sm:gap-4">
           <div className="relative max-w-[200px] sm:max-w-none flex-1 sm:flex-none">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-brand-muted" />
             <input 
@@ -407,7 +698,7 @@ export default function App() {
           {user ? (
             <div className="flex items-center gap-4">
               <div className="hidden sm:flex flex-col items-end">
-                <span className="text-xs font-bold text-white truncate max-w-[100px]">{user.displayName}</span>
+                <span className="text-xs font-bold text-white truncate max-w-[100px]">{user.email?.split('@')[0]}</span>
                 <div className="flex gap-1">
                   {isSuperAdmin ? (
                     <span className="text-[10px] text-brand-accent font-black uppercase tracking-tighter">Owner</span>
@@ -427,15 +718,90 @@ export default function App() {
                   )}
                 </div>
               </div>
-              <button onClick={() => signOut(auth)} className="flex items-center gap-2 bg-white/10 hover:bg-white/20 p-1.5 rounded-full transition-colors border border-white/10 group relative">
-                <img src={user.photoURL} alt="Profile" className="w-7 h-7 rounded-full shadow-lg" />
-                <div className="absolute top-full right-0 mt-2 bg-brand-surface border border-white/10 p-2 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-50">
-                  <span className="text-[10px] font-bold">Logout</span>
-                </div>
-              </button>
+              <div className="relative profile-menu-container z-[60]">
+                <button 
+                  onClick={() => setShowProfileMenu(prev => !prev)} 
+                  className={cn(
+                    "flex items-center gap-2 p-1.5 rounded-full transition-all border group relative cursor-pointer",
+                    showProfileMenu ? "bg-white/20 border-white/40" : "bg-white/10 hover:bg-white/20 border-white/10"
+                  )}
+                >
+                  <div className="w-7 h-7 rounded-full bg-brand-accent flex items-center justify-center text-xs font-black uppercase text-white shadow-lg shadow-brand-accent/20">
+                    {userProfile?.displayName?.[0] || user.email?.[0]}
+                  </div>
+                </button>
+
+                {showProfileMenu && (
+                  <div className="absolute top-full right-0 mt-3 w-56 bg-brand-surface border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 z-50">
+                    <div className="p-4 border-b border-white/5 bg-white/5">
+                      <p className="text-sm font-bold truncate">{userProfile?.displayName || user.email?.split('@')[0]}</p>
+                      <p className="text-[10px] text-brand-muted truncate mt-0.5">{user.email}</p>
+                    </div>
+                    
+                    <div className="p-2 space-y-1">
+                      <button 
+                        onClick={() => {
+                          setEditProfileForm({ 
+                            displayName: userProfile?.displayName || '',
+                            username: userProfile?.username || '',
+                            bio: userProfile?.bio || '',
+                            avatarUrl: userProfile?.avatarUrl || ''
+                          });
+                          setAvatarFile(null);
+                          setShowEditProfile(true);
+                          setShowProfileMenu(false);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-bold text-brand-muted hover:text-white hover:bg-white/5 transition-colors"
+                      >
+                        <Settings className="w-4 h-4" />
+                        <span>Edit Profile</span>
+                      </button>
+                      
+                      <button 
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-bold text-brand-muted hover:text-white hover:bg-white/5 transition-colors"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        <span>Logout</span>
+                      </button>
+                    </div>
+
+                    <div className="p-2 pt-0">
+                      <button 
+                        onClick={() => {
+                          if (deleteConfirmTimer) {
+                            handleDeleteAccount();
+                          } else {
+                            setDeleteConfirmTimer(Date.now());
+                            setTimeout(() => setDeleteConfirmTimer(null), 3000);
+                          }
+                        }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-bold transition-all truncate",
+                          deleteConfirmTimer 
+                            ? "bg-red-650 text-white animate-pulse" 
+                            : "text-red-500 hover:bg-red-500/10"
+                        )}
+                      >
+                        {deleteConfirmTimer ? (
+                          <>
+                            <AlertTriangle className="w-4 h-4 shrink-0" />
+                            <span>Confirm Deletion (3s)</span>
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 className="w-4 h-4 shrink-0" />
+                            <span>Delete Account</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
-            <button onClick={handleLogin} className="flex items-center gap-2 bg-brand-accent hover:bg-brand-accent/90 px-5 py-1.5 rounded text-sm font-bold transition-colors shadow-lg">
+            <button onClick={() => { setShowAuthModal(true); setAuthMode('signin'); }} className="flex items-center gap-2 bg-brand-accent hover:bg-brand-accent/90 px-5 py-1.5 rounded text-sm font-bold transition-colors shadow-lg">
               <LogIn className="w-4 h-4" />
               <span>Login</span>
             </button>
@@ -973,7 +1339,10 @@ export default function App() {
         <VideoPlayer 
           src={selectedVideo.videoUrl}
           title={selectedVideo.title}
+          videoId={selectedVideo.id}
+          currentUser={user}
           onClose={() => setSelectedVideo(null)}
+          onViewProfile={(profile) => setViewingProfile(profile)}
         />
       )}
 
@@ -982,6 +1351,260 @@ export default function App() {
           onComplete={handleAdComplete}
           onClose={() => setShowAdFor(null)}
         />
+      )}
+
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/90 backdrop-blur-md" onClick={() => setShowAuthModal(false)} />
+          <div className="relative w-full max-w-sm bg-brand-surface border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="p-8 text-center space-y-6">
+              <div className="space-y-2">
+                <h1 className="text-brand-accent text-3xl font-black font-serif tracking-tight uppercase">
+                  Streamo<span className="text-white">HD</span>
+                </h1>
+                <h3 className="text-xl font-bold">{authMode === 'signin' ? 'Welcome Back' : 'Create Account'}</h3>
+                <p className="text-xs text-brand-muted">
+                  {authMode === 'signin' 
+                    ? 'Sign in to access premium content and manage your profile.' 
+                    : 'Join StreamoHD to start your cinematic journey.'}
+                </p>
+              </div>
+
+              <form onSubmit={handleAuth} className="space-y-4 text-left">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Email Address</label>
+                  <input 
+                    type="email"
+                    required
+                    className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm focus:border-brand-accent outline-none transition-all"
+                    placeholder="name@example.com"
+                    value={authForm.email}
+                    onChange={e => setAuthForm({...authForm, email: e.target.value})}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Password</label>
+                  <input 
+                    type="password"
+                    required
+                    minLength={6}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm focus:border-brand-accent outline-none transition-all"
+                    placeholder="Min. 6 characters"
+                    value={authForm.password}
+                    onChange={e => setAuthForm({...authForm, password: e.target.value})}
+                  />
+                </div>
+
+                {authError && (
+                  <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                    <p className="text-[10px] text-red-500 font-bold text-center">{authError}</p>
+                  </div>
+                )}
+
+                <button 
+                  disabled={authLoading}
+                  className="w-full bg-brand-accent hover:bg-brand-accent/90 py-3.5 rounded-xl font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20 flex items-center justify-center gap-2"
+                >
+                  {authLoading ? (
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <LogIn className="w-4 h-4" />
+                      <span>{authMode === 'signin' ? 'Sign In' : 'Sign Up'}</span>
+                    </>
+                  )}
+                </button>
+              </form>
+
+              <div className="pt-4 border-t border-white/5">
+                <p className="text-xs text-brand-muted">
+                  {authMode === 'signin' ? "Don't have an account?" : "Already have an account?"}
+                  <button 
+                    onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')}
+                    className="ml-2 text-brand-accent font-bold hover:underline"
+                  >
+                    {authMode === 'signin' ? 'Sign Up' : 'Sign In'}
+                  </button>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Public Profile View Modal */}
+      {viewingProfile && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/95 backdrop-blur-2xl" onClick={() => setViewingProfile(null)} />
+          <div className="relative w-full max-w-sm bg-brand-surface border border-white/10 rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="p-8 flex flex-col items-center">
+              <button 
+                onClick={() => setViewingProfile(null)}
+                className="absolute top-4 right-4 p-2 text-brand-muted hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="w-32 h-32 rounded-full bg-brand-accent/10 border-4 border-white/5 overflow-hidden shadow-2xl mb-6">
+                {viewingProfile.avatarUrl ? (
+                  <img src={viewingProfile.avatarUrl} alt={viewingProfile.displayName} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-4xl font-black text-brand-accent uppercase">
+                    {viewingProfile.displayName?.[0] || viewingProfile.email?.[0]}
+                  </div>
+                )}
+              </div>
+
+              <div className="text-center space-y-4 w-full">
+                <div className="space-y-1">
+                  <h3 className="text-2xl font-black italic font-serif tracking-tighter">{viewingProfile.displayName || "Unknown User"}</h3>
+                  {viewingProfile.username && (
+                    <p className="text-brand-accent text-xs font-bold tracking-widest uppercase">@{viewingProfile.username}</p>
+                  )}
+                </div>
+
+                <div className="py-4 border-y border-white/5">
+                   <p className="text-xs text-brand-muted uppercase font-black tracking-widest mb-1">Cinematic Bio</p>
+                   <div className="max-h-48 overflow-y-auto scrollbar-hide">
+                      <p className="text-sm text-zinc-300 leading-relaxed italic whitespace-pre-wrap">
+                        {viewingProfile.bio || "This user hasn't written their cinematic story yet."}
+                      </p>
+                   </div>
+                </div>
+
+                <button 
+                  onClick={() => setViewingProfile(null)}
+                  className="w-full bg-white/5 hover:bg-white/10 py-3 rounded-xl text-xs font-bold uppercase tracking-widest transition-all"
+                >
+                  Close Profile
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Profile Modal */}
+      {showEditProfile && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/95 backdrop-blur-xl" onClick={() => !isUpdatingProfile && setShowEditProfile(false)} />
+          <div className="relative w-full max-w-md max-h-[90vh] bg-brand-surface border border-white/10 rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col">
+            <div className="flex-1 overflow-y-auto p-5 sm:p-8 text-center space-y-6 sm:space-y-8 scrollbar-hide">
+              <div className="space-y-2 sticky top-0 bg-brand-surface pt-1 z-10 pb-4 border-b border-white/5">
+                <h3 className="text-2xl font-black italic font-serif tracking-tighter uppercase">Edit <span className="text-brand-accent">Identity</span></h3>
+                <p className="text-[10px] text-brand-muted uppercase tracking-[0.2em] font-bold">Cinematic Presence Profile</p>
+              </div>
+
+              <form onSubmit={handleUpdateProfile} className="space-y-6 text-left">
+                {/* Avatar Section */}
+                <div className="flex flex-col items-center gap-4 py-2">
+                   <div className="relative group">
+                     <div className="w-24 h-24 rounded-full bg-brand-accent/10 border-2 border-white/10 overflow-hidden shadow-2xl transition-all group-hover:border-brand-accent">
+                       {avatarFile || editProfileForm.avatarUrl ? (
+                         <img 
+                           src={avatarFile ? URL.createObjectURL(avatarFile) : editProfileForm.avatarUrl} 
+                           alt="Preview" 
+                           className="w-full h-full object-cover"
+                         />
+                       ) : (
+                         <div className="w-full h-full flex items-center justify-center text-3xl font-black text-brand-accent uppercase">
+                           {editProfileForm.displayName?.[0] || user?.email?.[0]}
+                         </div>
+                       )}
+                     </div>
+                     <label className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer rounded-full">
+                       <Plus className="w-8 h-8 text-white" />
+                       <input 
+                         type="file" 
+                         accept="image/*" 
+                         className="hidden" 
+                         onChange={(e) => {
+                           const file = e.target.files?.[0];
+                           if (file) setAvatarFile(file);
+                         }} 
+                       />
+                     </label>
+                   </div>
+                   <p className="text-[9px] text-brand-muted uppercase font-bold tracking-widest">Tap to change profile picture (1:1 recommended)</p>
+                </div>
+
+                <div className="grid gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Display Name</label>
+                    <input 
+                      type="text"
+                      required
+                      placeholder="Your choice name..."
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-sm focus:border-brand-accent outline-none transition-all"
+                      value={editProfileForm.displayName}
+                      onChange={e => setEditProfileForm({ ...editProfileForm, displayName: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between">
+                      <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Username</label>
+                      <span className="text-[8px] text-brand-accent uppercase font-bold tracking-widest">lowercase_only_</span>
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted text-sm font-bold">@</span>
+                      <input 
+                        type="text"
+                        placeholder="unique_handle"
+                        className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-8 pr-3 text-sm focus:border-brand-accent outline-none transition-all placeholder:text-zinc-700"
+                        value={editProfileForm.username}
+                        onChange={e => setEditProfileForm({ ...editProfileForm, username: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between">
+                      <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Description (Bio)</label>
+                      <span className={cn(
+                        "text-[8px] font-bold tracking-widest",
+                        editProfileForm.bio.length > 5000 ? "text-red-500" : "text-brand-muted"
+                      )}>
+                        {editProfileForm.bio.length} / 5000
+                      </span>
+                    </div>
+                    <textarea 
+                      rows={4}
+                      placeholder="Tell your cinematic story..."
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-sm focus:border-brand-accent outline-none transition-all resize-none scrollbar-hide"
+                      value={editProfileForm.bio}
+                      onChange={e => setEditProfileForm({ ...editProfileForm, bio: e.target.value.slice(0, 5000) })}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-4 pt-4 sticky bottom-0 bg-brand-surface border-t border-white/5 pb-2 mt-4 z-10">
+                  <button 
+                    type="button"
+                    disabled={isUpdatingProfile}
+                    onClick={() => setShowEditProfile(false)}
+                    className="flex-1 px-4 py-3.5 rounded-2xl border border-white/10 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    type="submit"
+                    disabled={isUpdatingProfile}
+                    className="flex-1 bg-brand-accent hover:bg-brand-accent/90 py-3.5 rounded-2xl font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20 flex items-center justify-center gap-2"
+                  >
+                    {isUpdatingProfile ? (
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      "Save Changes"
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* User Role Editing Modal */}

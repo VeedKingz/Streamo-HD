@@ -24,6 +24,19 @@ export interface Video {
 export interface UserProfile {
   uid: string;
   email: string;
+  displayName?: string;
+  username?: string;
+  bio?: string;
+  avatarUrl?: string;
   roleIds: string[]; // List of Role IDs
   unlockedVideos: string[];
+}
+
+export interface Comment {
+  id: string;
+  videoId: string;
+  authorId: string;
+  content: string;
+  createdAt: string;
+  profiles?: UserProfile; // Joined profile data
 }
