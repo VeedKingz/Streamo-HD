@@ -35,6 +35,8 @@ jobs:
 
       - name: Build Web App
         run: npm run build
+        env:
+          CI: false
 
       - name: Capacitor Sync
         run: npx cap sync android
@@ -45,7 +47,7 @@ jobs:
       - name: Build Android App (Debug APK)
         run: |
           cd android
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace --info
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v7
