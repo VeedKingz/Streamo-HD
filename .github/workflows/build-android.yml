@@ -53,22 +53,12 @@ jobs:
       - name: Capacitor Sync
         run: npx cap sync android
 
-      - name: Fix Missing Directories
+      - name: Build Android App (Debug APK)
         run: |
           mkdir -p android/app/libs
           mkdir -p android/capacitor-cordova-android-plugins/src/main/libs
-          mkdir -p node_modules/@capacitor/android/capacitor/libs || true
-
-      - name: Fix Gradle Wrapper
-        run: |
           cd android
-          gradle wrapper --gradle-version 8.10.2
-          chmod +x gradlew
-
-      - name: Build Android App (Debug APK)
-        run: |
-          cd android
-          ./gradlew assembleDebug --stacktrace --no-daemon
+          gradle clean assembleDebug --stacktrace --no-daemon
 
       - name: Find APK Path
         run: find android/app/build/outputs/apk -name "*.apk"
