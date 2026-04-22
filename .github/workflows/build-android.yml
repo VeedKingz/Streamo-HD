@@ -53,6 +53,11 @@ jobs:
       - name: Capacitor Sync
         run: npx cap sync android
 
+      - name: Fix Missing Directories
+        run: |
+          mkdir -p android/app/libs
+          mkdir -p android/capacitor-cordova-android-plugins/src/main/libs
+
       - name: Fix Gradle Wrapper
         run: |
           cd android
