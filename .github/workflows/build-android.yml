@@ -39,17 +39,33 @@ jobs:
         run: npm install
 
       - name: Build Web App
-        run: npm run build
+        run: |
+          npm run build
+          ls -R dist | head -n 20
         env:
           CI: false
+
+      - name: Diagnostic
+        run: |
+          npx cap --version
+          ls -d node_modules/@capacitor/android/capacitor || echo "Capacitor android missing"
 
       - name: Capacitor Sync
         run: npx cap sync android
 
+      - name: Fix Gradle Wrapper
+        run: |
+          cd android
+          gradle wrapper --gradle-version 8.14.3
+          chmod +x gradlew
+
       - name: Build Android App (Debug APK)
         run: |
           cd android
-          gradle assembleDebug --stacktrace --info
+          ./gradlew assembleDebug --stacktrace --info
+
+      - name: Find APK Path
+        run: find android/app/build/outputs/apk -name "*.apk"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v7
