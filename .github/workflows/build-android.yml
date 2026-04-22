@@ -69,6 +69,11 @@ jobs:
         run: |
           cd android
           ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Find APK Path
+        run: find android/app/build/outputs/apk -name "*.apk"
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v7
         with:
           name: StreamoHD-debug-apk
