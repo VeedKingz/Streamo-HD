@@ -649,9 +649,24 @@ export default function App() {
     return (
       <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center p-8 text-center bg-[radial-gradient(circle_at_center,_var(--color-brand-surface)_0%,_transparent_100%)]">
         <div className="max-w-md space-y-8">
-          <h1 className="text-brand-accent text-5xl font-black font-serif tracking-tight uppercase">
-            Streamo<span className="text-white">HD</span>
-          </h1>
+          <div className="flex flex-col items-center gap-4">
+            <div className="relative group">
+              <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-2xl transform transition-transform">
+                {/* Play Button Background */}
+                <div className="absolute inset-0 flex items-center justify-center opacity-10">
+                  <div className="w-0 h-0 border-t-[15px] border-t-transparent border-l-[25px] border-l-brand-accent border-b-[15px] border-b-transparent ml-2"></div>
+                </div>
+                {/* Main letter S */}
+                <span className="text-brand-bg font-black text-4xl italic font-serif z-10 select-none">S</span>
+              </div>
+              <div className="absolute -bottom-2 -right-2 w-8 h-8 bg-brand-accent rounded-full border-4 border-brand-bg flex items-center justify-center shadow-lg">
+                <div className="w-0 h-0 border-t-[4px] border-t-transparent border-l-[8px] border-l-white border-b-[4px] border-b-transparent ml-1"></div>
+              </div>
+            </div>
+            <h1 className="text-brand-accent text-3xl font-black font-serif tracking-tight uppercase">
+              Streamo<span className="text-white">HD</span>
+            </h1>
+          </div>
           
           <form onSubmit={saveConfig} className="bg-brand-surface p-6 rounded-xl border border-white/10 shadow-2xl space-y-6 text-left">
             <div className="space-y-4 text-center">
@@ -740,9 +755,21 @@ export default function App() {
       {/* Navbar */}
       <nav className="fixed top-0 left-0 right-0 z-40 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-3 sm:px-4 md:px-12 py-3 flex items-center gap-4">
         <div className="flex items-center gap-6 shrink-0">
-          <h1 className="text-brand-accent text-xl sm:text-2xl md:text-3xl font-black font-serif tracking-tight uppercase">
-            Streamo<span className="text-white">HD</span>
-          </h1>
+          <div className="flex items-center gap-3 group cursor-pointer">
+            <div className="relative">
+              <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-lg transform transition-transform group-hover:scale-110">
+                {/* Play Button Background */}
+                <div className="absolute inset-0 flex items-center justify-center opacity-10">
+                  <div className="w-0 h-0 border-t-[8px] border-t-transparent border-l-[14px] border-l-brand-accent border-b-[8px] border-b-transparent ml-1"></div>
+                </div>
+                {/* Main letter S */}
+                <span className="text-brand-bg font-black text-xl italic font-serif z-10 select-none">S</span>
+              </div>
+            </div>
+            <h1 className="text-brand-accent text-xl sm:text-2xl font-black font-serif tracking-tight uppercase leading-none">
+              Streamo<span className="text-white">HD</span>
+            </h1>
+          </div>
           <div className="hidden lg:flex items-center gap-6 text-sm font-medium text-brand-muted">
             {categories.map(cat => (
               <button key={cat} className="hover:text-white transition-colors">{cat}</button>
