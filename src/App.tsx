@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, X, Film, Tv, MonitorPlay, Search as SearchIcon, User, LogIn, LogOut, LayoutDashboard, PlayCircle, Shield, Users, Trash2, CheckCircle2, Edit2, AlertTriangle, Settings } from 'lucide-react';
-import { supabase, getSupabaseConfig } from './lib/supabase';
+import { supabase, getSupabaseConfig, isSupabaseConfigured } from './lib/supabase';
 import { Video, Category, UserProfile, Role, Permission } from './types';
 import CategoryRow from './components/CategoryRow';
 import VideoCard from './components/VideoCard';
@@ -21,10 +21,48 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [backendError, setBackendError] = useState<string | null>(null);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+
+  const MOCK_VIDEOS: Video[] = [
+    {
+      id: 'mock-1',
+      title: 'Cinematic Demo 1',
+      description: 'A beautiful cinematic experience in demo mode.',
+      thumbnail: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=2059',
+      videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+      category: 'Movies',
+      authorId: 'system',
+      created_at: new Date().toISOString(),
+      isPremium: false
+    },
+    {
+      id: 'mock-2',
+      title: 'Web Series Preview',
+      description: 'Explore the future of streaming with our web series collection.',
+      thumbnail: 'https://images.unsplash.com/photo-1542204172-356399558651?auto=format&fit=crop&q=80&w=1974',
+      videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+      category: 'Web Series',
+      authorId: 'system',
+      created_at: new Date().toISOString(),
+      isPremium: true
+    }
+  ];
 
   const handleBackendError = (error: any, operation: string) => {
     console.error(`Supabase Error [${operation}]:`, error);
-    setBackendError(error.message || String(error));
+    const msg = error?.message || String(error);
+    
+    if (msg.includes('Failed to fetch')) {
+      setBackendError('Network Error: Could not reach Supabase. This usually means the URL is wrong, your project is PAUSED (Supabase pauses free projects after inactivity), or your internet is blocking the connection.');
+    } else if (msg.includes('Lock') || msg.includes('stole')) {
+      console.warn('Silent Auth Lock Error:', msg);
+      // Don't show this as a full block error to the user if we can help it
+      if (operation === 'INIT_APP') {
+        setBackendError('Connection Sync Issue: The browser blocked an authentication lock. Please refresh the page or try again.');
+      }
+    } else {
+      setBackendError(msg);
+    }
   };
 
   // Upload States
@@ -66,22 +104,38 @@ export default function App() {
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
 
+  const initAppCalled = React.useRef(false);
+
   useEffect(() => {
+    if (initAppCalled.current) return;
+    initAppCalled.current = true;
+
     const initApp = async () => {
-      // Safety timeout to prevent infinite loading
-      const timeout = setTimeout(() => {
+      if (!isSupabaseConfigured()) {
         setIsInitializing(false);
-      }, 10000);
+        return;
+      }
 
       try {
-        // 1. Get initial session
-        const { data: { session }, error: authError } = await supabase.auth.getSession();
+        // 1. Get initial session with built-in retry for lock errors
+        const { data: { session }, error: authError } = await supabase.auth.getSession().catch(async (err) => {
+          if (err.message?.includes('Lock') || err.message?.includes('stole')) {
+            console.warn('Locked out of auth session - retrying once...');
+            await new Promise(r => setTimeout(r, 600));
+            return supabase.auth.getSession();
+          }
+          throw err;
+        }).catch(err => {
+          console.error('Final Auth Session Failure:', err);
+          return { data: { session: null }, error: null };
+        });
+        
         if (authError) throw authError;
 
         const u = session?.user ?? null;
         setUser(u);
         
-        // 2. Load context-specific data
+        // 2. Load context-specific data safely
         const promises: Promise<any>[] = [fetchVideos()];
         
         if (u) {
@@ -89,11 +143,11 @@ export default function App() {
           promises.push(fetchRoles());
         }
 
+        // Use allSettled so one failed fetch doesn't block the whole app
         await Promise.allSettled(promises);
       } catch (err) {
         handleBackendError(err, 'INIT_APP');
       } finally {
-        clearTimeout(timeout);
         setIsInitializing(false);
       }
     };
@@ -102,8 +156,10 @@ export default function App() {
 
     // Listen for auth changes
     const { data: { subscription: authListener } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      // Avoid processing if initializing
       const u = session?.user ?? null;
       setUser(u);
+      
       if (u) {
         await Promise.allSettled([
           fetchUserProfile(u.id, u.email!),
@@ -149,6 +205,10 @@ export default function App() {
   }, [showProfileMenu]);
 
   const fetchVideos = async () => {
+    if (isDemoMode || !isSupabaseConfigured()) {
+      setVideos(MOCK_VIDEOS);
+      return;
+    }
     try {
       const { data, error } = await supabase.from('videos').select('*').order('created_at', { ascending: false });
       if (error) throw error;
@@ -159,6 +219,7 @@ export default function App() {
   };
 
   const fetchRoles = async () => {
+    if (isDemoMode || !isSupabaseConfigured()) return;
     try {
       const { data, error } = await supabase.from('roles').select('*');
       if (error) throw error;
@@ -584,7 +645,7 @@ export default function App() {
     );
   }
 
-  if (!isConfigValid || backendError) {
+  if (!isSupabaseConfigured() || backendError) {
     return (
       <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center p-8 text-center bg-[radial-gradient(circle_at_center,_var(--color-brand-surface)_0%,_transparent_100%)]">
         <div className="max-w-md space-y-8">
@@ -594,10 +655,17 @@ export default function App() {
           
           <form onSubmit={saveConfig} className="bg-brand-surface p-6 rounded-xl border border-white/10 shadow-2xl space-y-6 text-left">
             <div className="space-y-4 text-center">
-              <h2 className="text-xl font-bold font-serif">{backendError ? "Backend Connection Issue" : "Supabase Quick Setup"}</h2>
+              <h2 className="text-xl font-bold font-serif">{backendError ? "Connection Error" : "Supabase Setup Required"}</h2>
               <p className="text-brand-muted text-xs leading-relaxed">
-                Enter your Supabase credentials below to connect your streaming database. these are stored locally in your browser.
+                {backendError 
+                  ? "We couldn't connect to your Supabase project. Please verify your credentials and network."
+                  : "Enter your Supabase credentials below to connect your streaming database. these are stored locally in your browser."}
               </p>
+              {backendError && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-[10px] text-red-500 font-mono break-all">
+                  {backendError}
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -630,7 +698,19 @@ export default function App() {
               type="submit"
               className="w-full bg-brand-accent hover:bg-brand-accent/90 py-3 rounded font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20"
             >
-              Connect Database
+              Update Connection
+            </button>
+
+            <button 
+              type="button"
+              onClick={() => {
+                setIsDemoMode(true);
+                setBackendError(null);
+                setVideos(MOCK_VIDEOS);
+              }}
+              className="w-full bg-white/5 hover:bg-white/10 py-3 rounded font-black uppercase text-[10px] tracking-widest transition-all border border-white/10"
+            >
+              Enter Demo Mode (Offline)
             </button>
 
             <div className="p-3 bg-brand-accent/5 rounded border border-brand-accent/10">
@@ -645,7 +725,7 @@ export default function App() {
               onClick={resetConfig}
               className="w-full text-[10px] text-zinc-500 hover:text-white transition-colors uppercase tracking-widest font-bold"
             >
-              Reset Configuration
+              Clear Local Credentials
             </button>
           </form>
 

@@ -18,7 +18,7 @@ export interface Video {
   description?: string;
   isPremium?: boolean;
   authorId?: string;
-  createdAt?: any;
+  created_at?: string;
 }
 
 export interface UserProfile {
@@ -37,6 +37,6 @@ export interface Comment {
   videoId: string;
   authorId: string;
   content: string;
-  createdAt: string;
+  created_at: string;
   profiles?: UserProfile; // Joined profile data
 }

@@ -66,5 +66,5 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v7
         with:
-          name: StreamoHD-v1.3-APK
+          name: StreamoHD-v1.4-GoldenBuild
           path: android/app/build/outputs/apk/debug/*.apk

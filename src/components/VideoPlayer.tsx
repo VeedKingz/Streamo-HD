@@ -285,7 +285,7 @@ export default function VideoPlayer({ videoId, src, title, currentUser, onClose,
                           {comment.profiles?.displayName || "Member"}
                         </button>
                         <span className="text-[9px] text-brand-muted font-bold">
-                          {new Date(comment.createdAt).toLocaleDateString()}
+                          {new Date(comment.created_at).toLocaleDateString()}
                         </span>
                       </div>
                       <p className="text-[13px] text-zinc-300 leading-relaxed font-medium">
