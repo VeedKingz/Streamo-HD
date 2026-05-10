@@ -1,6 +1,42 @@
 -- 🎬 STREAMOHD ULTIMATE CONSOLIDATED SCHEMA (MASTER FIX)
 -- This script ensures all tables, social features, and security rules are in perfect sync.
 
+-- 0. STORAGE SETUP (CRITICAL FOR UPLOADS)
+-- This creates the 'media' bucket if it doesn't exist
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('media', 'media', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- Storage Policies for 'media' bucket
+-- 1. Allow public read access to all files
+CREATE POLICY "Public Access"
+ON storage.objects FOR SELECT
+USING ( bucket_id = 'media' );
+
+-- 2. Allow authenticated users to upload files
+CREATE POLICY "Auth Uploads"
+ON storage.objects FOR INSERT 
+WITH CHECK ( bucket_id = 'media' AND auth.role() = 'authenticated' );
+
+-- 3. Allow owners to delete their own files
+CREATE POLICY "Owner Delete"
+ON storage.objects FOR DELETE
+USING ( bucket_id = 'media' AND auth.uid() = owner );
+
+-- 0. FIX EXISTING TABLES (Migration Guard)
+DO $$ 
+BEGIN
+    -- Ensure profiles has roleIds
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='roleIds') THEN
+        ALTER TABLE public.profiles ADD COLUMN "roleIds" uuid[] DEFAULT '{}';
+    END IF;
+    
+    -- Ensure profiles has unlockedVideos
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='unlockedVideos') THEN
+        ALTER TABLE public.profiles ADD COLUMN "unlockedVideos" uuid[] DEFAULT '{}';
+    END IF;
+END $$;
+
 -- 1. VIDEOS (The Core Library)
 CREATE TABLE IF NOT EXISTS public.videos (
   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,

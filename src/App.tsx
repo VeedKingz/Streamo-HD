@@ -48,20 +48,39 @@ export default function App() {
     }
   ];
 
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+
   const handleBackendError = (error: any, operation: string) => {
     console.error(`Supabase Error [${operation}]:`, error);
     const msg = error?.message || String(error);
     
+    // Check for specific fatal connection errors
     if (msg.includes('Failed to fetch')) {
       setBackendError('Network Error: Could not reach Supabase. This usually means the URL is wrong, your project is PAUSED (Supabase pauses free projects after inactivity), or your internet is blocking the connection.');
-    } else if (msg.includes('Lock') || msg.includes('stole')) {
+      return;
+    } 
+    
+    if (msg.includes('Lock') || msg.includes('stole')) {
       console.warn('Silent Auth Lock Error:', msg);
-      // Don't show this as a full block error to the user if we can help it
       if (operation === 'INIT_APP') {
         setBackendError('Connection Sync Issue: The browser blocked an authentication lock. Please refresh the page or try again.');
       }
-    } else {
+      return;
+    }
+
+    // Check for schema errors (missing columns)
+    if (msg.includes('column') && msg.includes('cache')) {
+      setSchemaError(`Database Schema Error: It looks like your tables are out of sync. Error: ${msg}`);
+      // Don't set backendError, let the app run but show a warning
+      return;
+    }
+
+    // For other errors, we might want to show them but not necessarily block the whole app
+    // unless they happen during INIT_APP
+    if (operation === 'INIT_APP') {
       setBackendError(msg);
+    } else {
+      console.warn(`Non-fatal Supabase error [${operation}]:`, msg);
     }
   };
 
@@ -536,15 +555,23 @@ export default function App() {
     const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
     const filePath = `${type === 'thumbnail' ? 'thumbnails' : 'videos'}/${fileName}`;
 
-    // Note: This simplified version doesn't handle progress easily with standard upload
-    // but we'll simulate the UI state for the user's benefit
-    setUploadProgress(prev => ({ ...prev, [type]: 10 }));
-    
     const { data, error } = await supabase.storage
-      .from('media') // Assumes a 'media' bucket exists
-      .upload(filePath, file);
+      .from('media')
+      .upload(filePath, file, {
+        cacheControl: '3600',
+        upsert: false,
+        onUploadProgress: (progress) => {
+          const percent = (progress.loaded / progress.total) * 100;
+          setUploadProgress(prev => ({ ...prev, [type]: Math.round(percent) }));
+        }
+      });
 
-    if (error) throw error;
+    if (error) {
+      if (error.message.includes('bucket not found')) {
+        throw new Error("Storage Bucket 'media' not found. Please create a public bucket named 'media' in your Supabase Storage dashboard.");
+      }
+      throw error;
+    }
     
     setUploadProgress(prev => ({ ...prev, [type]: 100 }));
     
@@ -677,8 +704,13 @@ export default function App() {
                   : "Enter your Supabase credentials below to connect your streaming database. these are stored locally in your browser."}
               </p>
               {backendError && (
-                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-[10px] text-red-500 font-mono break-all">
-                  {backendError}
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-[10px] text-red-500 font-mono break-all space-y-2">
+                  <p>{backendError}</p>
+                  {backendError.includes('column') && (
+                    <p className="text-white font-bold bg-red-500/20 p-2 rounded">
+                      TIP: It seems you are missing some columns. Please run the SQL script provided in the file tree (SUPABASE_SCHEMA.sql) in your Supabase SQL Editor.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -709,12 +741,23 @@ export default function App() {
               </div>
             </div>
 
-            <button 
-              type="submit"
-              className="w-full bg-brand-accent hover:bg-brand-accent/90 py-3 rounded font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20"
-            >
-              Update Connection
-            </button>
+            <div className="flex gap-2">
+              <button 
+                type="submit"
+                className="flex-1 bg-brand-accent hover:bg-brand-accent/90 py-3 rounded font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20"
+              >
+                {backendError ? "Retry Connection" : "Connect Database"}
+              </button>
+              {backendError && (
+                <button 
+                  type="button"
+                  onClick={() => setBackendError(null)}
+                  className="px-4 bg-white/5 hover:bg-white/10 rounded border border-white/10 text-xs font-bold transition-all"
+                >
+                  Ignore
+                </button>
+              )}
+            </div>
 
             <button 
               type="button"
@@ -732,6 +775,8 @@ export default function App() {
               <p className="text-[10px] text-zinc-400 text-center leading-tight">
                 Get these keys from your Supabase Dashboard under <br/> 
                 <span className="text-brand-accent font-bold">Settings &gt; API</span>
+                <br />
+                <span className="block mt-1 text-zinc-500">Don't forget to run <b>SUPABASE_SCHEMA.sql</b> in the SQL Editor!</span>
               </p>
             </div>
 
@@ -752,6 +797,18 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-brand-bg text-white font-sans selection:bg-brand-accent/30">
+      {schemaError && (
+        <div className="fixed top-0 left-0 right-0 z-[100] bg-red-600 text-white p-2 text-center text-xs font-bold flex items-center justify-center gap-4 animate-in slide-in-from-top duration-300">
+          <AlertTriangle className="w-4 h-4" />
+          <span>{schemaError}</span>
+          <button 
+            onClick={() => setSchemaError(null)}
+            className="bg-black/20 hover:bg-black/40 px-3 py-1 rounded-full text-[10px] transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* Navbar */}
       <nav className="fixed top-0 left-0 right-0 z-40 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-3 sm:px-4 md:px-12 py-3 flex items-center gap-4">
         <div className="flex items-center gap-6 shrink-0">
