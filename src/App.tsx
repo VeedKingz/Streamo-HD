@@ -1,1849 +1,939 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, X, Film, Tv, MonitorPlay, Search as SearchIcon, User, LogIn, LogOut, LayoutDashboard, PlayCircle, Shield, Users, Trash2, CheckCircle2, Edit2, AlertTriangle, Settings } from 'lucide-react';
-import { supabase, getSupabaseConfig, isSupabaseConfigured } from './lib/supabase';
-import { Video, Category, UserProfile, Role, Permission } from './types';
-import CategoryRow from './components/CategoryRow';
-import VideoCard from './components/VideoCard';
-import VideoPlayer from './components/VideoPlayer';
-import MockAd from './components/MockAd';
-import { cn } from './lib/utils';
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Play, 
+  Tv, 
+  Download, 
+  Upload, 
+  Search, 
+  Settings, 
+  Copy, 
+  Check, 
+  AlertTriangle, 
+  Layers, 
+  Database, 
+  Smartphone, 
+  Grid, 
+  Info, 
+  X, 
+  ExternalLink, 
+  User, 
+  Users, 
+  Flame, 
+  FolderMinus, 
+  Film,
+  Sparkle,
+  Plus,
+  RefreshCw,
+  Video
+} from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
+
+// --- Types & Interfaces ---
+interface VideoItem {
+  id: string;
+  title: string;
+  description: string;
+  thumbnail_url: string;
+  video_url: string;
+  category: string;
+  duration: string;
+  likes: number;
+  unlocked?: boolean;
+}
+
+interface SupabaseConfig {
+  url: string;
+  key: string;
+}
+
+// --- Mock Data for Demo Mode ---
+const MOCK_VIDEOS: VideoItem[] = [
+  {
+    id: "v1",
+    title: "Cosmic Horizon: Voyage Beyond",
+    description: "Embark on an immersive cinematic voyage through a spectacular nebula, detailing the future of space exploration and stellar charting.",
+    thumbnail_url: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=1200&auto=format&fit=crop",
+    video_url: "https://assets.mixkit.co/videos/preview/mixkit-nebula-in-outer-space-41712-large.mp4",
+    category: "Sci-Fi",
+    duration: "2:45",
+    likes: 342,
+    unlocked: true
+  },
+  {
+    id: "v2",
+    title: "Neon Pulse: Cyber Cityscape",
+    description: "A gorgeous, high-contrast night tour of a fictional sci-fi metropolis, radiating with vibrant neon streams and synthwave soundtracks.",
+    thumbnail_url: "https://images.unsplash.com/photo-1542838132-92c53300491e?q=80&w=800&auto=format&fit=crop",
+    video_url: "https://assets.mixkit.co/videos/preview/mixkit-neon-light-reflections-on-wet-asphalt-43026-large.mp4",
+    category: "Action",
+    duration: "1:30",
+    likes: 218,
+    unlocked: true
+  },
+  {
+    id: "v3",
+    title: "Nature's Whisper: Deep Forest",
+    description: "Rejuvenate with crisp 4K vistas of sunlit streams and majestic redwoods. The ultimate sensory experience for nature lovers.",
+    thumbnail_url: "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?q=80&w=800&auto=format&fit=crop",
+    video_url: "https://assets.mixkit.co/videos/preview/mixkit-forest-stream-in-the-sunlight-529-large.mp4",
+    category: "Nature",
+    duration: "3:10",
+    likes: 198,
+    unlocked: true
+  },
+  {
+    id: "v4",
+    title: "Midnight Drift: Tokyo Highway",
+    description: "An elegant night-drive video showing dynamic speed, sparkling tail lights, and industrial modern architectures.",
+    thumbnail_url: "https://images.unsplash.com/photo-1506157786151-b8491531f063?q=80&w=800&auto=format&fit=crop",
+    video_url: "https://assets.mixkit.co/videos/preview/mixkit-street-lights-at-night-14002-large.mp4",
+    category: "Action",
+    duration: "2:05",
+    likes: 412,
+    unlocked: true
+  }
+];
+
+const INITIAL_SQL = `-- 🎬 STREAMOHD ULTIMATE CONSOLIDATED SCHEMA
+-- Execute this within your Supabase project in SQL Editor to set up tables.
+
+-- 1. Create Public Videos Table
+CREATE TABLE IF NOT EXISTS public.videos (
+  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+  title text NOT NULL,
+  description text,
+  thumbnail_url text NOT NULL,
+  video_url text NOT NULL,
+  category text DEFAULT 'General',
+  duration text DEFAULT '0:00',
+  likes integer DEFAULT 0,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- 2. Create Profiles Table to Track User Settings
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id uuid REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
+  full_name text,
+  "roleIds" uuid[] DEFAULT '{}',
+  "unlockedVideos" uuid[] DEFAULT '{}',
+  updated_at timestamp with time zone
+);
+
+-- 3. Setup Storage for Videos and Thumbnails
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('media', 'media', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- 4. Enable Read Access to Media Storage Bucket
+CREATE POLICY "Public Read" ON storage.objects FOR SELECT USING (bucket_id = 'media');
+
+-- 5. Enable Write Access to media for Signed-in Users
+CREATE POLICY "Auth Uploads" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'media' AND auth.role() = 'authenticated');
+`;
 
 export default function App() {
-  const [videos, setVideos] = useState<Video[]>([]);
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [user, setUser] = useState<any>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
-  const [showAdFor, setShowAdFor] = useState<Video | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showAdmin, setShowAdmin] = useState(false);
-  const [adminTab, setAdminTab] = useState<'content' | 'roles' | 'users'>('content');
-  const [loading, setLoading] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(true);
-  const [backendError, setBackendError] = useState<string | null>(null);
-  const [isDemoMode, setIsDemoMode] = useState(false);
+  // Config state
+  const [supabaseUrl, setSupabaseUrl] = useState<string>(() => localStorage.getItem('supabase_url') || '');
+  const [supabaseKey, setSupabaseKey] = useState<string>(() => localStorage.getItem('supabase_anon_key') || '');
+  const [isDBConnected, setIsDBConnected] = useState<boolean>(false);
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(true);
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
 
-  const MOCK_VIDEOS: Video[] = [
-    {
-      id: 'mock-1',
-      title: 'Cinematic Demo 1',
-      description: 'A beautiful cinematic experience in demo mode.',
-      thumbnail: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&q=80&w=2059',
-      videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      category: 'Movies',
-      authorId: 'system',
-      created_at: new Date().toISOString(),
-      isPremium: false
-    },
-    {
-      id: 'mock-2',
-      title: 'Web Series Preview',
-      description: 'Explore the future of streaming with our web series collection.',
-      thumbnail: 'https://images.unsplash.com/photo-1542204172-356399558651?auto=format&fit=crop&q=80&w=1974',
-      videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-      category: 'Web Series',
-      authorId: 'system',
-      created_at: new Date().toISOString(),
-      isPremium: true
-    }
-  ];
+  // Core App states
+  const [videos, setVideos] = useState<VideoItem[]>(MOCK_VIDEOS);
+  const [selectedVideo, setSelectedVideo] = useState<VideoItem | null>(MOCK_VIDEOS[0]);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  
+  // Modals & Panels state
+  const [showConfigModal, setShowConfigModal] = useState<boolean>(false);
+  const [showUploadModal, setShowUploadModal] = useState<boolean>(false);
+  const [showSQLModal, setShowSQLModal] = useState<boolean>(false);
+  const [copied, setCopied] = useState<boolean>(false);
+  
+  // Custom alerts/status
+  const [connError, setConnError] = useState<string | null>(null);
+  const [apkBuildStatus, setApkBuildStatus] = useState<'idle' | 'building' | 'completed' | 'failed'>('completed');
 
-  const [schemaError, setSchemaError] = useState<string | null>(null);
+  // Input states for Upload
+  const [newTitle, setNewTitle] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newCategory, setNewCategory] = useState('Sci-Fi');
+  const [newThumb, setNewThumb] = useState('');
+  const [newVideoUrl, setNewVideoUrl] = useState('');
+  const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
-  const handleBackendError = (error: any, operation: string) => {
-    console.error(`Supabase Error [${operation}]:`, error);
-    const msg = error?.message || String(error);
-    
-    // Check for specific fatal connection errors
-    if (msg.includes('Failed to fetch')) {
-      setBackendError('Network Error: Could not reach Supabase. This usually means the URL is wrong, your project is PAUSED (Supabase pauses free projects after inactivity), or your internet is blocking the connection.');
-      return;
-    } 
-    
-    if (msg.includes('Lock') || msg.includes('stole')) {
-      console.warn('Silent Auth Lock Error:', msg);
-      if (operation === 'INIT_APP') {
-        setBackendError('Connection Sync Issue: The browser blocked an authentication lock. Please refresh the page or try again.');
-      }
-      return;
-    }
+  // Reference for Native Android App Building State
+  const [showApkGuide, setShowApkGuide] = useState<boolean>(false);
 
-    // Check for schema errors (missing columns)
-    if (msg.includes('column') && msg.includes('cache')) {
-      setSchemaError(`Database Schema Error: It looks like your tables are out of sync. Error: ${msg}`);
-      // Don't set backendError, let the app run but show a warning
-      return;
-    }
-
-    // For other errors, we might want to show them but not necessarily block the whole app
-    // unless they happen during INIT_APP
-    if (operation === 'INIT_APP') {
-      setBackendError(msg);
-    } else {
-      console.warn(`Non-fatal Supabase error [${operation}]:`, msg);
-    }
-  };
-
-  // Upload States
-  const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState({ thumbnail: 0, video: 0 });
-
-  // Admin Form State
-  const [newVideo, setNewVideo] = useState({
-    title: '',
-    thumbnail: '',
-    category: 'Movies' as Category,
-    videoUrl: '',
-    description: '',
-    isPremium: false
-  });
-
-  // Role Management State
-  const [newRole, setNewRole] = useState({ name: '', permissions: [] as Permission[], color: '#E50914' });
-  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
-  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
-  const [userToEdit, setUserToEdit] = useState<UserProfile | null>(null);
-  const [roleToDelete, setRoleToDelete] = useState<string | null>(null);
-
-  // Auth Modal State
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [authForm, setAuthForm] = useState({ email: '', password: '' });
-  const [authLoading, setAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-
-  // Profile Menu State
-  const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [showEditProfile, setShowEditProfile] = useState(false);
-  const [deleteConfirmTimer, setDeleteConfirmTimer] = useState<number | null>(null);
-  const [editProfileForm, setEditProfileForm] = useState({ displayName: '', username: '', bio: '', avatarUrl: '' });
-  const [avatarFile, setAvatarFile] = useState<File | null>(null);
-  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
-  const [viewingProfile, setViewingProfile] = useState<UserProfile | null>(null);
-
-  const initAppCalled = React.useRef(false);
-
+  // Initialize Supabase client lazily
   useEffect(() => {
-    if (initAppCalled.current) return;
-    initAppCalled.current = true;
-
-    const initApp = async () => {
-      if (!isSupabaseConfigured()) {
-        setIsInitializing(false);
-        return;
-      }
-
-      try {
-        // 1. Get initial session with built-in retry for lock errors
-        const { data: { session }, error: authError } = await supabase.auth.getSession().catch(async (err) => {
-          if (err.message?.includes('Lock') || err.message?.includes('stole')) {
-            console.warn('Locked out of auth session - retrying once...');
-            await new Promise(r => setTimeout(r, 600));
-            return supabase.auth.getSession();
+    const initializeDb = async () => {
+      if (supabaseUrl && supabaseKey) {
+        try {
+          const client = createClient(supabaseUrl, supabaseKey);
+          // Try loading a test request to see if it works
+          const { data, error } = await client.from('videos').select('*').limit(1);
+          if (error) {
+            console.warn("Supabase Config loaded but failed to query 'videos':", error.message);
+            // It might be due to missing relation or table; we can assume config is correct but schema is missing
+            setIsDBConnected(true);
+            setIsDemoMode(false);
+          } else {
+            setIsDBConnected(true);
+            setIsDemoMode(false);
+            if (data && data.length > 0) {
+              setVideos(data as VideoItem[]);
+              setSelectedVideo(data[0] as VideoItem);
+            }
           }
-          throw err;
-        }).catch(err => {
-          console.error('Final Auth Session Failure:', err);
-          return { data: { session: null }, error: null };
-        });
-        
-        if (authError) throw authError;
-
-        const u = session?.user ?? null;
-        setUser(u);
-        
-        // 2. Load context-specific data safely
-        const promises: Promise<any>[] = [fetchVideos()];
-        
-        if (u) {
-          promises.push(fetchUserProfile(u.id, u.email!));
-          promises.push(fetchRoles());
+        } catch (err: any) {
+          console.error("Supabase Init Fatal error:", err);
+          setIsDBConnected(false);
+          setIsDemoMode(true);
         }
-
-        // Use allSettled so one failed fetch doesn't block the whole app
-        await Promise.allSettled(promises);
-      } catch (err) {
-        handleBackendError(err, 'INIT_APP');
-      } finally {
-        setIsInitializing(false);
-      }
-    };
-
-    initApp();
-
-    // Listen for auth changes
-    const { data: { subscription: authListener } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      // Avoid processing if initializing
-      const u = session?.user ?? null;
-      setUser(u);
-      
-      if (u) {
-        await Promise.allSettled([
-          fetchUserProfile(u.id, u.email!),
-          fetchRoles()
-        ]);
       } else {
-        setUserProfile(null);
-        setRoles([]); // Clear roles for guests
+        // Fallback to Demo Mode
+        setIsDemoMode(true);
       }
-    });
-
-    // Real-time subscriptions
-    const videosChannel = supabase
-      .channel('videos-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'videos' }, fetchVideos)
-      .subscribe();
-
-    const rolesChannel = supabase
-      .channel('roles-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'roles' }, fetchRoles)
-      .subscribe();
-
-    return () => {
-      authListener.unsubscribe();
-      supabase.removeChannel(videosChannel);
-      supabase.removeChannel(rolesChannel);
+      setIsInitializing(false);
     };
-  }, []);
+    initializeDb();
+  }, [supabaseUrl, supabaseKey]);
 
-  // Click outside to close profile menu
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      if (!target.closest('.profile-menu-container')) {
-        setShowProfileMenu(false);
-      }
-    };
-
-    if (showProfileMenu) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showProfileMenu]);
-
-  const fetchVideos = async () => {
-    if (isDemoMode || !isSupabaseConfigured()) {
-      setVideos(MOCK_VIDEOS);
-      return;
-    }
-    try {
-      const { data, error } = await supabase.from('videos').select('*').order('created_at', { ascending: false });
-      if (error) throw error;
-      setVideos((data as Video[]) || []);
-    } catch (error) {
-      handleBackendError(error, 'FETCH_VIDEOS');
-    }
-  };
-
-  const fetchRoles = async () => {
-    if (isDemoMode || !isSupabaseConfigured()) return;
-    try {
-      const { data, error } = await supabase.from('roles').select('*');
-      if (error) throw error;
-      setRoles((data as Role[]) || []);
-    } catch (error) {
-      handleBackendError(error, 'FETCH_ROLES');
-    }
-  };
-
-  const fetchUserProfile = async (uid: string, email: string) => {
-    try {
-      const { data, error } = await supabase.from('profiles').select('*').eq('uid', uid).single();
-      if (error && error.code !== 'PGRST116') { // PGRST116 is code for no rows found
-        throw error;
-      } else if (data) {
-        setUserProfile(data as UserProfile);
-      } else {
-        // Create profile if missing
-        const newProfile: UserProfile = {
-          uid,
-          email,
-          displayName: email.split('@')[0],
-          roleIds: [],
-          unlockedVideos: []
-        };
-        const { error: insertError } = await supabase.from('profiles').insert([newProfile]);
-        if (insertError) throw insertError;
-        setUserProfile(newProfile);
-      }
-    } catch (error) {
-      handleBackendError(error, 'FETCH_PROFILE');
-    }
-  };
-
-  const isSuperAdmin = user?.email === 'khizarabbaskharal55@gmail.com' || user?.email === 'uniqueofficial6767@gmail.com';
-
-  const hasPermission = (permission: Permission) => {
-    if (isSuperAdmin) return true;
-    if (!userProfile?.roleIds) return false;
-    
-    // Check if any assigned role has the required permission OR the ADMIN permission
-    return userProfile.roleIds.some(roleId => {
-      const role = roles.find(r => r.id === roleId);
-      return role?.permissions.includes(permission) || role?.permissions.includes('ADMIN');
-    });
-  };
-
-  const fetchUsers = async () => {
-    if (!hasPermission('MANAGE_ROLES')) return;
-    const { data, error } = await supabase.from('profiles').select('*');
-    if (error) handleBackendError(error, 'FETCH_USERS');
-    else setAllUsers(data as UserProfile[]);
-  };
-
-  useEffect(() => {
-    if (showAdmin && adminTab === 'users') {
-      fetchUsers();
-    }
-  }, [showAdmin, adminTab]);
-
-  const handleSubmitRole = async (e: React.FormEvent) => {
+  // Handle saving of configuration
+  const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!hasPermission('MANAGE_ROLES')) return;
-    
-    try {
-      if (editingRoleId) {
-        const { error } = await supabase.from('roles').update(newRole).eq('id', editingRoleId);
-        if (error) throw error;
-        setEditingRoleId(null);
-      } else {
-        const { error } = await supabase.from('roles').insert([newRole]);
-        if (error) throw error;
-      }
-      setNewRole({ name: '', permissions: [], color: '#E50914' });
-    } catch (error) {
-      handleBackendError(error, 'WRITE_ROLE');
-    }
-  };
-
-  const handleDeleteRole = async (roleId: string) => {
-    if (!hasPermission('MANAGE_ROLES')) return;
-    try {
-      const { error } = await supabase.from('roles').delete().eq('id', roleId);
-      if (error) throw error;
-      setRoleToDelete(null);
-    } catch (error) {
-      console.error("Error deleting role:", error);
-      alert("Failed to delete role.");
-    }
-  };
-
-  const handleDeleteVideo = async (videoId: string) => {
-    const video = videos.find(v => v.id === videoId);
-    if (!video) return;
-
-    const canDelete = hasPermission('MANAGE_UPLOADS') || video.authorId === user?.id;
-    if (!canDelete) {
-      alert("You don't have permission to delete this video.");
+    setConnError(null);
+    if (!supabaseUrl.trim() || !supabaseKey.trim()) {
+      setConnError("Please enter both Supabase URL and Anonymous Key.");
       return;
     }
 
-    if (!confirm('Permanently delete this video?')) return;
     try {
-      const { error } = await supabase.from('videos').delete().eq('id', videoId);
-      if (error) throw error;
-    } catch (error) {
-      console.error("Delete error:", error);
-      alert("Delete failed. Check your permissions.");
-    }
-  };
-
-  const handleUpdateUserRoles = async (uid: string, roleIds: string[]) => {
-    if (!hasPermission('MANAGE_ROLES')) return;
-    const { error } = await supabase.from('profiles').update({ roleIds }).eq('uid', uid);
-    if (error) handleBackendError(error, 'UPDATE_USER_ROLES');
-    else {
-      fetchUsers();
-      alert('Roles updated');
-    }
-  };
-
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError(null);
-    let isRequesting = true;
-
-    // Timeout for auth
-    const authTimeout = setTimeout(() => {
-      if (isRequesting) {
-        setAuthLoading(false);
-        setAuthError("Authentication timed out. Please check your connection.");
-      }
-    }, 15000);
-
-    try {
-      if (authMode === 'signup') {
-        const { error } = await supabase.auth.signUp({
-          email: authForm.email,
-          password: authForm.password,
-        });
-        if (error) throw error;
-        setAuthLoading(false);
-        alert('Account created! Please check your email for a verification link if required, then sign in.');
-        setAuthMode('signin');
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: authForm.email,
-          password: authForm.password,
-        });
-        if (error) throw error;
-        setAuthLoading(false);
-        setShowAuthModal(false);
-      }
-    } catch (error: any) {
-      setAuthError(error.message);
-    } finally {
-      isRequesting = false;
-      clearTimeout(authTimeout);
-      setAuthLoading(false);
-    }
-  };
-
-  const handleUpdateProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-    setIsUpdatingProfile(true);
-
-    try {
-      // 1. Username and Bio Validation
-      const username = editProfileForm.username.toLowerCase().trim();
-      if (username && !/^[a-z0-9_]*$/.test(username)) {
-        throw new Error("Username can only contain lowercase letters, numbers, and underscores.");
-      }
+      const client = createClient(supabaseUrl.trim(), supabaseKey.trim());
+      const { error } = await client.from('videos').select('*').limit(1);
       
-      if (editProfileForm.bio.length > 5000) {
-        throw new Error("Bio cannot exceed 5,000 characters.");
+      if (error && error.message.includes('Fetch')) {
+        throw new Error("Could not reach Supabase host. Please check the URL.");
       }
 
-      // 2. Uniqueness Check for Username
-      if (username && username !== userProfile?.username) {
-        const { data: existingUser, error: checkError } = await supabase
-          .from('profiles')
-          .select('username')
-          .eq('username', username)
-          .maybeSingle();
-        
-        if (checkError) throw checkError;
-        if (existingUser) throw new Error("This username is already taken.");
+      localStorage.setItem('supabase_url', supabaseUrl.trim());
+      localStorage.setItem('supabase_anon_key', supabaseKey.trim());
+      setIsDBConnected(true);
+      setIsDemoMode(false);
+      setShowConfigModal(false);
+
+      // Reload videos from real database
+      const { data: dbVideos } = await client.from('videos').select('*');
+      if (dbVideos && dbVideos.length > 0) {
+        setVideos(dbVideos as VideoItem[]);
+        setSelectedVideo(dbVideos[0] as VideoItem);
       }
-
-      let finalAvatarUrl = editProfileForm.avatarUrl;
-
-      // 3. Avatar Upload (Handling as base64 for simplicity in this proto, or URL if provided)
-      // Note: Ideally use supabase.storage, but since we don't have a bucket set up via UI, 
-      // we'll stick to text fields or data-uris for this cinemative prototype.
-      if (avatarFile) {
-        // Mocking a successful upload for the prototype feel
-        const reader = new FileReader();
-        const base64Promise = new Promise((resolve) => {
-          reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(avatarFile);
-        });
-        finalAvatarUrl = (await base64Promise) as string;
-      }
-
-      // 4. Update Profile
-      const updateData = {
-        displayName: editProfileForm.displayName,
-        username: username || null,
-        bio: editProfileForm.bio,
-        avatarUrl: finalAvatarUrl
-      };
-
-      const { error } = await supabase.from('profiles').update(updateData).eq('uid', user.id);
-      if (error) throw error;
-      
-      setUserProfile(prev => prev ? { ...prev, ...updateData } : null);
-      setShowEditProfile(false);
-      alert('Profile updated successfully!');
-    } catch (error: any) {
-      alert(error.message || "Failed to update profile.");
-    } finally {
-      setIsUpdatingProfile(false);
+    } catch (err: any) {
+      setConnError(err?.message || "Failed to establish connect to your Supabase project.");
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      // Small local loading indicator if needed, but not the global one
-      await supabase.auth.signOut();
-    } catch (error) {
-      console.error("Logout error (non-fatal):", error);
-    } finally {
-      // Clear JS states (optional since redirect wipes them)
-      setUser(null);
-      setUserProfile(null);
-      setRoles([]);
-      setShowProfileMenu(false);
-      
-      // Full redirect is mandatory to reset the auth listener state
-      window.location.href = window.location.origin;
-    }
-  };
-
-  const handleDeleteAccount = async () => {
-    if (!user) return;
-    try {
-      // 1. Delete user profile and associated data (Cascade from DB handles comments)
-      const { error: profileError } = await supabase.from('profiles').delete().eq('uid', user.id);
-      if (profileError) throw profileError;
-      
-      // 2. Sign Out
-      await supabase.auth.signOut();
-      
-      // 3. Clear State & Inform
-      setUser(null);
-      setUserProfile(null);
-      setRoles([]);
-      alert('Your account and identity have been permanently deleted.');
-      
-      // 4. Force Reload to Landing
-      window.location.href = window.location.origin;
-    } catch (error) {
-      handleBackendError(error, 'DELETE_ACCOUNT');
-    }
-  };
-
-  const DEFAULT_ROLE_COLORS = [
-    '#E50914', // Netflix Red
-    '#5865F2', // Discord Blue
-    '#57F287', // Green
-    '#FEE75C', // Yellow
-    '#EB459E', // Fuchsia
-    '#9B59B6', // Purple
-    '#3498DB', // Blue
-    '#E67E22', // Orange
-  ];
-
-  const handleVideoSelect = (video: Video) => {
-    if (video.isPremium && !userProfile?.unlockedVideos.includes(video.id)) {
-      setShowAdFor(video);
-    } else {
-      setSelectedVideo(video);
-    }
-  };
-
-  const handleAdComplete = async () => {
-    if (showAdFor && user) {
-      const updatedUnlocked = [...(userProfile?.unlockedVideos || []), showAdFor.id];
-      const { error } = await supabase.from('profiles').update({
-        unlockedVideos: updatedUnlocked
-      }).eq('uid', user.id);
-      
-      if (error) {
-        handleBackendError(error, 'UNLOCK_VIDEO');
-        return;
-      }
-
-      // Update local state
-      setUserProfile(prev => prev ? {
-        ...prev,
-        unlockedVideos: updatedUnlocked
-      } : null);
-      
-      const videoToPlay = showAdFor;
-      setShowAdFor(null);
-      setSelectedVideo(videoToPlay);
-    }
-  };
-
-  const uploadFile = async (file: File, type: 'thumbnail' | 'video'): Promise<string> => {
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
-    const filePath = `${type === 'thumbnail' ? 'thumbnails' : 'videos'}/${fileName}`;
-
-    const { data, error } = await supabase.storage
-      .from('media')
-      .upload(filePath, file, {
-        cacheControl: '3600',
-        upsert: false,
-        onUploadProgress: (progress) => {
-          const percent = (progress.loaded / progress.total) * 100;
-          setUploadProgress(prev => ({ ...prev, [type]: Math.round(percent) }));
-        }
-      });
-
-    if (error) {
-      if (error.message.includes('bucket not found')) {
-        throw new Error("Storage Bucket 'media' not found. Please create a public bucket named 'media' in your Supabase Storage dashboard.");
-      }
-      throw error;
-    }
-    
-    setUploadProgress(prev => ({ ...prev, [type]: 100 }));
-    
-    const { data: { publicUrl } } = supabase.storage
-      .from('media')
-      .getPublicUrl(filePath);
-      
-    return publicUrl;
-  };
-
-  const handleAddVideo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-    if (!thumbnailFile || !videoFile) {
-      alert("Please select both a thumbnail and a video file.");
-      return;
-    }
-
-    setUploading(true);
-    try {
-      const thumbUrl = await uploadFile(thumbnailFile, 'thumbnail');
-      const vidUrl = await uploadFile(videoFile, 'video');
-
-      const { error } = await supabase.from('videos').insert([{
-        ...newVideo,
-        thumbnail: thumbUrl,
-        videoUrl: vidUrl,
-        authorId: user.id,
-        created_at: new Date().toISOString()
-      }]);
-
-      if (error) throw error;
-
-      setNewVideo({
-        title: '',
-        thumbnail: '',
-        category: 'Movies',
-        videoUrl: '',
-        description: '',
-        isPremium: false
-      });
-      setThumbnailFile(null);
-      setVideoFile(null);
-      setUploadProgress({ thumbnail: 0, video: 0 });
-      alert('Video added successfully!');
-    } catch (error) {
-      console.error("Error adding video:", error);
-      alert('Failed to add video. Check your storage bucket permissions and connection.');
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const filteredVideos = videos.filter(v => 
-    v.title.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const categories: Category[] = ['Movies', 'Anime', 'Web Series'];
-
-  const [manualConfig, setManualConfig] = useState(getSupabaseConfig());
-  const [showConfigModal, setShowConfigModal] = useState(false);
-
-  const saveConfig = (e: React.FormEvent) => {
-    e.preventDefault();
-    localStorage.setItem('supabase_url', manualConfig.url || '');
-    localStorage.setItem('supabase_anon_key', manualConfig.key || '');
-    window.location.reload(); // Refresh to re-initialize the client
-  };
-
-  // Check if configuration is present
-  const isConfigValid = !!manualConfig.url && !!manualConfig.key;
-
-  const resetConfig = () => {
+  const handleDisconnect = () => {
     localStorage.removeItem('supabase_url');
     localStorage.removeItem('supabase_anon_key');
-    window.location.reload();
+    setSupabaseUrl('');
+    setSupabaseKey('');
+    setIsDBConnected(false);
+    setIsDemoMode(true);
+    setVideos(MOCK_VIDEOS);
+    setSelectedVideo(MOCK_VIDEOS[0]);
   };
 
-  if (isInitializing && isConfigValid && !backendError) {
-    return (
-      <div className="min-h-screen bg-brand-bg flex items-center justify-center">
-        <div className="relative flex flex-col items-center gap-12 text-center">
-          <div className="relative">
-            <div className="w-16 h-16 border-4 border-white/5 rounded-full" />
-            <div className="absolute inset-0 w-16 h-16 border-4 border-brand-accent border-t-transparent rounded-full animate-spin" />
-          </div>
-          <div className="space-y-6">
-            <p className="text-[10px] text-brand-muted uppercase font-black tracking-widest animate-pulse">Initializing StreamoHD</p>
-            <button 
-              onClick={() => setIsInitializing(false)}
-              className="text-[9px] bg-white/5 hover:bg-white/10 text-zinc-500 hover:text-white px-6 py-2 rounded-full border border-white/10 transition-all uppercase tracking-widest"
-            >
-              Bypass Loading
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const handleCopySQL = () => {
+    navigator.clipboard.writeText(INITIAL_SQL);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
-  if (!isSupabaseConfigured() || backendError) {
-    return (
-      <div className="min-h-screen bg-brand-bg flex flex-col items-center justify-center p-8 text-center bg-[radial-gradient(circle_at_center,_var(--color-brand-surface)_0%,_transparent_100%)]">
-        <div className="max-w-md space-y-8">
-          <div className="flex flex-col items-center gap-4">
-            <div className="relative group">
-              <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-2xl transform transition-transform">
-                {/* Play Button Background */}
-                <div className="absolute inset-0 flex items-center justify-center opacity-10">
-                  <div className="w-0 h-0 border-t-[15px] border-t-transparent border-l-[25px] border-l-brand-accent border-b-[15px] border-b-transparent ml-2"></div>
-                </div>
-                {/* Main letter S */}
-                <span className="text-brand-bg font-black text-4xl italic font-serif z-10 select-none">S</span>
-              </div>
-              <div className="absolute -bottom-2 -right-2 w-8 h-8 bg-brand-accent rounded-full border-4 border-brand-bg flex items-center justify-center shadow-lg">
-                <div className="w-0 h-0 border-t-[4px] border-t-transparent border-l-[8px] border-l-white border-b-[4px] border-b-transparent ml-1"></div>
-              </div>
-            </div>
-            <h1 className="text-brand-accent text-3xl font-black font-serif tracking-tight uppercase">
-              Streamo<span className="text-white">HD</span>
-            </h1>
-          </div>
-          
-          <form onSubmit={saveConfig} className="bg-brand-surface p-6 rounded-xl border border-white/10 shadow-2xl space-y-6 text-left">
-            <div className="space-y-4 text-center">
-              <h2 className="text-xl font-bold font-serif">{backendError ? "Connection Error" : "Supabase Setup Required"}</h2>
-              <p className="text-brand-muted text-xs leading-relaxed">
-                {backendError 
-                  ? "We couldn't connect to your Supabase project. Please verify your credentials and network."
-                  : "Enter your Supabase credentials below to connect your streaming database. these are stored locally in your browser."}
-              </p>
-              {backendError && (
-                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded text-[10px] text-red-500 font-mono break-all space-y-2">
-                  <p>{backendError}</p>
-                  {backendError.includes('column') && (
-                    <p className="text-white font-bold bg-red-500/20 p-2 rounded">
-                      TIP: It seems you are missing some columns. Please run the SQL script provided in the file tree (SUPABASE_SCHEMA.sql) in your Supabase SQL Editor.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
+  // Upload Video Form Handler
+  const handleMockUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setUploadMessage(null);
 
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Project URL</label>
-                <input 
-                  type="url"
-                  placeholder="https://your-project.supabase.co"
-                  required
-                  className="w-full bg-white/5 border border-white/10 rounded p-3 text-sm focus:border-brand-accent outline-none transition-colors"
-                  value={manualConfig.url || ''}
-                  onChange={e => setManualConfig({...manualConfig, url: e.target.value})}
-                />
-              </div>
+    if (!newTitle || !newThumb || !newVideoUrl) {
+      setUploadMessage({ type: 'error', text: 'All asterisks (*) fields are required.' });
+      return;
+    }
 
-              <div className="space-y-1.5">
-                <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Anon API Key</label>
-                <input 
-                  type="password"
-                  placeholder="your-anon-key"
-                  required
-                  className="w-full bg-white/5 border border-white/10 rounded p-3 text-sm focus:border-brand-accent outline-none transition-colors"
-                  value={manualConfig.key || ''}
-                  onChange={e => setManualConfig({...manualConfig, key: e.target.value})}
-                />
-              </div>
-            </div>
+    const newItem: VideoItem = {
+      id: "user_" + Date.now(),
+      title: newTitle,
+      description: newDesc,
+      thumbnail_url: newThumb,
+      video_url: newVideoUrl,
+      category: newCategory,
+      duration: "2:40",
+      likes: 0
+    };
 
-            <div className="flex gap-2">
-              <button 
-                type="submit"
-                className="flex-1 bg-brand-accent hover:bg-brand-accent/90 py-3 rounded font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20"
-              >
-                {backendError ? "Retry Connection" : "Connect Database"}
-              </button>
-              {backendError && (
-                <button 
-                  type="button"
-                  onClick={() => setBackendError(null)}
-                  className="px-4 bg-white/5 hover:bg-white/10 rounded border border-white/10 text-xs font-bold transition-all"
-                >
-                  Ignore
-                </button>
-              )}
-            </div>
+    if (!isDemoMode) {
+      try {
+        const client = createClient(supabaseUrl, supabaseKey);
+        const { error } = await client.from('videos').insert([
+          {
+            title: newTitle,
+            description: newDesc,
+            thumbnail_url: newThumb,
+            video_url: newVideoUrl,
+            category: newCategory,
+            duration: "2:40"
+          }
+        ]);
+        if (error) throw error;
+        
+        // Refresh videos
+        const { data: refreshed } = await client.from('videos').select('*');
+        if (refreshed) {
+          setVideos(refreshed);
+        }
+      } catch (err: any) {
+        setUploadMessage({ type: 'error', text: `Supabase Upload Error: ${err.message}` });
+        return;
+      }
+    } else {
+      // Offline implementation
+      setVideos(prev => [newItem, ...prev]);
+    }
 
-            <button 
-              type="button"
-              onClick={() => {
-                setIsDemoMode(true);
-                setBackendError(null);
-                setVideos(MOCK_VIDEOS);
-              }}
-              className="w-full bg-white/5 hover:bg-white/10 py-3 rounded font-black uppercase text-[10px] tracking-widest transition-all border border-white/10"
-            >
-              Enter Demo Mode (Offline)
-            </button>
+    setSelectedVideo(newItem);
+    setUploadMessage({ type: 'success', text: 'Video uploaded successfully to Streamo HD!' });
+    
+    // Clear Form
+    setNewTitle('');
+    setNewDesc('');
+    setNewThumb('');
+    setNewVideoUrl('');
+    
+    setTimeout(() => {
+      setShowUploadModal(false);
+      setUploadMessage(null);
+    }, 1500);
+  };
 
-            <div className="p-3 bg-brand-accent/5 rounded border border-brand-accent/10">
-              <p className="text-[10px] text-zinc-400 text-center leading-tight">
-                Get these keys from your Supabase Dashboard under <br/> 
-                <span className="text-brand-accent font-bold">Settings &gt; API</span>
-                <br />
-                <span className="block mt-1 text-zinc-500">Don't forget to run <b>SUPABASE_SCHEMA.sql</b> in the SQL Editor!</span>
-              </p>
-            </div>
-
-            <button 
-              type="button"
-              onClick={resetConfig}
-              className="w-full text-[10px] text-zinc-500 hover:text-white transition-colors uppercase tracking-widest font-bold"
-            >
-              Clear Local Credentials
-            </button>
-          </form>
-
-          <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-bold">SQL Setup required: ensure your tables exist!</p>
-        </div>
-      </div>
-    );
-  }
+  const categories = ['All', 'Sci-Fi', 'Action', 'Nature', 'Drama', 'General'];
+  const filteredVideos = videos.filter(v => {
+    const matchesSearch = v.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          v.description.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesCategory = selectedCategory === 'All' || v.category === selectedCategory;
+    return matchesSearch && matchesCategory;
+  });
 
   return (
-    <div className="min-h-screen bg-brand-bg text-white font-sans selection:bg-brand-accent/30">
-      {schemaError && (
-        <div className="fixed top-0 left-0 right-0 z-[100] bg-red-600 text-white p-2 text-center text-xs font-bold flex items-center justify-center gap-4 animate-in slide-in-from-top duration-300">
-          <AlertTriangle className="w-4 h-4" />
-          <span>{schemaError}</span>
+    <div className="min-h-screen bg-zinc-950 text-white relative">
+      
+      {/* Dynamic Floating Subheader for Native Android Integration */}
+      <div className="bg-gradient-to-r from-blue-900 via-zinc-900 to-indigo-900 text-xs text-zinc-200 py-2.5 px-4 font-semibold flex items-center justify-between border-b border-blue-500/20 shadow-xl z-50 relative">
+        <div className="flex items-center gap-2">
+          <Smartphone className="w-4 h-4 text-blue-400 animate-pulse" />
+          <span>Streamo HD Android Engine is <span className="text-emerald-400 font-bold">Ready</span></span>
+          <span className="opacity-40">|</span>
+          <span className="hidden sm:inline text-zinc-400">Targeting ARM64v8 / APK Production</span>
+        </div>
+        <div className="flex items-center gap-3">
           <button 
-            onClick={() => setSchemaError(null)}
-            className="bg-black/20 hover:bg-black/40 px-3 py-1 rounded-full text-[10px] transition-colors"
+            onClick={() => setShowApkGuide(true)} 
+            className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-[10px] font-bold tracking-wider uppercase transition-all flex items-center gap-1.5 shadow-lg shadow-blue-500/20 shadow-lg"
           >
-            Dismiss
+            <Download className="w-3 h-3" /> Get APK
+          </button>
+          <button 
+            onClick={() => setShowSQLModal(true)} 
+            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1 rounded text-[10px] font-bold tracking-wider uppercase transition-all flex items-center gap-1"
+          >
+            <Database className="w-3 h-3 text-cyan-400" /> Database SQL
           </button>
         </div>
-      )}
-      {/* Navbar */}
-      <nav className="fixed top-0 left-0 right-0 z-40 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-3 sm:px-4 md:px-12 py-3 flex items-center gap-4">
-        <div className="flex items-center gap-6 shrink-0">
-          <div className="flex items-center gap-3 group cursor-pointer">
-            <div className="relative">
-              <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-lg transform transition-transform group-hover:scale-110">
-                {/* Play Button Background */}
-                <div className="absolute inset-0 flex items-center justify-center opacity-10">
-                  <div className="w-0 h-0 border-t-[8px] border-t-transparent border-l-[14px] border-l-brand-accent border-b-[8px] border-b-transparent ml-1"></div>
-                </div>
-                {/* Main letter S */}
-                <span className="text-brand-bg font-black text-xl italic font-serif z-10 select-none">S</span>
+      </div>
+
+      {/* --- Main Navigation Header --- */}
+      <nav className="border-b border-white/5 bg-zinc-950/80 backdrop-blur-xl sticky top-0 z-40 px-4 md:px-10 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        
+        {/* Custom Custom TV Logo requested with outer circle, play button background, and letter 'S' */}
+        <div className="flex items-center gap-3">
+          <div className="relative cursor-pointer select-none">
+            {/* Transparent elegant play shape inside a beautiful white circle */}
+            <div className="w-11 h-11 bg-white rounded-full flex items-center justify-center shadow-lg shadow-white/10 relative overflow-hidden group">
+              {/* Play symbol on icon */}
+              <div className="absolute inset-0 bg-blue-500/10 flex items-center justify-center">
+                <Play className="w-6 h-6 text-blue-500/20 fill-blue-500/5 ml-1" />
               </div>
+              {/* Main italicized text S in serif */}
+              <span className="text-zinc-900 font-black text-2xl italic font-serif z-10">S</span>
             </div>
-            <h1 className="text-brand-accent text-xl sm:text-2xl font-black font-serif tracking-tight uppercase leading-none">
-              Streamo<span className="text-white">HD</span>
-            </h1>
+            {/* Glowing Accent Ring */}
+            <div className="absolute -inset-1 border border-blue-500/30 rounded-full scale-105 pointer-events-none"></div>
           </div>
-          <div className="hidden lg:flex items-center gap-6 text-sm font-medium text-brand-muted">
-            {categories.map(cat => (
-              <button key={cat} className="hover:text-white transition-colors">{cat}</button>
-            ))}
+          <div>
+            <h1 className="text-lg font-black tracking-wider text-white uppercase leading-none font-serif">
+              Streamo<span className="text-blue-500">HD</span>
+            </h1>
+            <p className="text-[9px] text-zinc-400 uppercase font-mono tracking-widest mt-0.5">Ultra Media Hub</p>
           </div>
         </div>
 
-        <div className="flex-1 flex items-center justify-end gap-2 sm:gap-4">
-          <div className="relative max-w-[200px] sm:max-w-none flex-1 sm:flex-none">
-            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-brand-muted" />
-            <input 
-              type="text"
-              placeholder="Search..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="bg-white/10 border border-white/20 rounded-full py-1.5 pl-9 pr-3 text-xs sm:text-sm text-brand-muted focus:text-white focus:outline-none focus:ring-1 focus:ring-brand-accent/50 w-full sm:w-48 md:w-64 transition-all"
-            />
+        {/* Search Input */}
+        <div className="relative flex-1 max-w-md">
+          <input 
+            type="text" 
+            placeholder="Search films, space voyages, neon pulse..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-zinc-900/80 border border-white/10 rounded-full py-2.5 pl-11 pr-4 text-xs font-medium placeholder-zinc-500 focus:outline-none focus:border-blue-500 transition-colors"
+          />
+          <Search className="w-4 h-4 text-zinc-500 absolute left-4 top-1/2 -translate-y-1/2" />
+        </div>
+
+        {/* Database Status and Actions */}
+        <div className="flex items-center gap-3 self-end md:self-auto">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 rounded-full border border-white/5">
+            <div className={`w-2 h-2 rounded-full ${isDemoMode ? 'bg-amber-400 animate-pulse' : 'bg-emerald-500'}`} />
+            <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-zinc-300">
+              {isDemoMode ? 'OFFLINE DEMO MODE' : 'SUPABASE CONNECTED'}
+            </span>
           </div>
 
-          {(hasPermission('MANAGE_UPLOADS') || hasPermission('MANAGE_ROLES') || hasPermission('UPLOAD_CONTENT')) && (
-            <button 
-              onClick={() => setShowAdmin(!showAdmin)}
-              className={cn(
-                "p-2 rounded transition-colors relative",
-                showAdmin ? "bg-brand-accent text-white" : "bg-white/5 text-brand-muted hover:text-white"
-              )}
-            >
-              <LayoutDashboard className="w-5 h-5" />
-              {isSuperAdmin && <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-brand-accent rounded-full border-2 border-brand-bg" />}
-            </button>
-          )}
+          <button 
+            onClick={() => setShowConfigModal(true)} 
+            className="p-2 hover:bg-zinc-900 rounded-full border border-white/10 text-zinc-400 hover:text-white transition-colors"
+            title="Database Connection Config"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
 
-          {user ? (
-            <div className="flex items-center gap-4">
-              <div className="hidden sm:flex flex-col items-end">
-                <span className="text-xs font-bold text-white truncate max-w-[100px]">{user.email?.split('@')[0]}</span>
-                <div className="flex gap-1">
-                  {isSuperAdmin ? (
-                    <span className="text-[10px] text-brand-accent font-black uppercase tracking-tighter">Owner</span>
-                  ) : (
-                    userProfile?.roleIds.map(rid => {
-                      const role = roles.find(r => r.id === rid);
-                      return (
-                        <span 
-                          key={rid} 
-                          className="text-[8px] px-1 rounded-sm font-bold uppercase"
-                          style={{ backgroundColor: role?.color || '#333' }}
-                        >
-                          {role?.name}
-                        </span>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-              <div className="relative profile-menu-container z-[60]">
-                <button 
-                  onClick={() => setShowProfileMenu(prev => !prev)} 
-                  className={cn(
-                    "flex items-center gap-2 p-1.5 rounded-full transition-all border group relative cursor-pointer",
-                    showProfileMenu ? "bg-white/20 border-white/40" : "bg-white/10 hover:bg-white/20 border-white/10"
-                  )}
-                >
-                  <div className="w-7 h-7 rounded-full bg-brand-accent flex items-center justify-center text-xs font-black uppercase text-white shadow-lg shadow-brand-accent/20">
-                    {userProfile?.displayName?.[0] || user.email?.[0]}
-                  </div>
-                </button>
-
-                {showProfileMenu && (
-                  <div className="absolute top-full right-0 mt-3 w-56 bg-brand-surface border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 z-50">
-                    <div className="p-4 border-b border-white/5 bg-white/5">
-                      <p className="text-sm font-bold truncate">{userProfile?.displayName || user.email?.split('@')[0]}</p>
-                      <p className="text-[10px] text-brand-muted truncate mt-0.5">{user.email}</p>
-                    </div>
-                    
-                    <div className="p-2 space-y-1">
-                      <button 
-                        onClick={() => {
-                          setEditProfileForm({ 
-                            displayName: userProfile?.displayName || '',
-                            username: userProfile?.username || '',
-                            bio: userProfile?.bio || '',
-                            avatarUrl: userProfile?.avatarUrl || ''
-                          });
-                          setAvatarFile(null);
-                          setShowEditProfile(true);
-                          setShowProfileMenu(false);
-                        }}
-                        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-bold text-brand-muted hover:text-white hover:bg-white/5 transition-colors"
-                      >
-                        <Settings className="w-4 h-4" />
-                        <span>Edit Profile</span>
-                      </button>
-                      
-                      <button 
-                        onClick={handleLogout}
-                        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-bold text-brand-muted hover:text-white hover:bg-white/5 transition-colors"
-                      >
-                        <LogOut className="w-4 h-4" />
-                        <span>Logout</span>
-                      </button>
-                    </div>
-
-                    <div className="p-2 pt-0">
-                      <button 
-                        onClick={() => {
-                          if (deleteConfirmTimer) {
-                            handleDeleteAccount();
-                          } else {
-                            setDeleteConfirmTimer(Date.now());
-                            setTimeout(() => setDeleteConfirmTimer(null), 3000);
-                          }
-                        }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-bold transition-all truncate",
-                          deleteConfirmTimer 
-                            ? "bg-red-650 text-white animate-pulse" 
-                            : "text-red-500 hover:bg-red-500/10"
-                        )}
-                      >
-                        {deleteConfirmTimer ? (
-                          <>
-                            <AlertTriangle className="w-4 h-4 shrink-0" />
-                            <span>Confirm Deletion (3s)</span>
-                          </>
-                        ) : (
-                          <>
-                            <Trash2 className="w-4 h-4 shrink-0" />
-                            <span>Delete Account</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <button onClick={() => { setShowAuthModal(true); setAuthMode('signin'); }} className="flex items-center gap-2 bg-brand-accent hover:bg-brand-accent/90 px-5 py-1.5 rounded text-sm font-bold transition-colors shadow-lg">
-              <LogIn className="w-4 h-4" />
-              <span>Login</span>
-            </button>
-          )}
+          <button 
+            onClick={() => setShowUploadModal(true)} 
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-full py-2 px-5 text-xs tracking-wider uppercase transition-all flex items-center gap-1.5 shadow-lg shadow-blue-600/20"
+          >
+            <Upload className="w-3.5 h-3.5" /> Upload Video
+          </button>
         </div>
       </nav>
 
-      {/* Main Content */}
-      <main className="pt-24 pb-12">
-        {showAdmin ? (
-          <div className="max-w-4xl mx-auto px-4 py-8 bg-brand-surface sm:rounded border border-white/5 shadow-2xl">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
-              <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                <h2 className="text-xl sm:text-2xl font-bold font-serif">Management</h2>
-                <div className="flex bg-black/40 p-1 rounded-lg border border-white/5 overflow-x-auto scrollbar-hide">
-                  {(hasPermission('MANAGE_UPLOADS') || hasPermission('UPLOAD_CONTENT')) && (
-                    <button 
-                      onClick={() => setAdminTab('content')}
-                      className={cn("px-4 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap", adminTab === 'content' ? "bg-brand-accent text-white shadow-lg" : "text-brand-muted hover:text-white")}
-                    >
-                      Content
-                    </button>
-                  )}
-                  {hasPermission('MANAGE_ROLES') && (
-                    <div className="flex shrink-0">
-                      <button 
-                        onClick={() => setAdminTab('roles')}
-                        className={cn("px-4 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap", adminTab === 'roles' ? "bg-brand-accent text-white shadow-lg" : "text-brand-muted hover:text-white")}
-                      >
-                        Roles
-                      </button>
-                      <button 
-                        onClick={() => setAdminTab('users')}
-                        className={cn("px-4 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap", adminTab === 'users' ? "bg-brand-accent text-white shadow-lg" : "text-brand-muted hover:text-white")}
-                      >
-                        Members
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowAdmin(false)} 
-                className="absolute top-4 right-4 sm:relative sm:top-0 sm:right-0 text-brand-muted hover:text-white transition-colors p-2"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
+      {/* --- Main Dashboard Container --- */}
+      <main className="px-4 md:px-10 py-6 space-y-8">
+        
+        {/* Cinematic Premium Spot / Billboard View */}
+        {selectedVideo && (
+          <section className="relative rounded-2xl overflow-hidden aspect-video md:aspect-[21/9] bg-zinc-900 border border-white/5 shadow-2x">
+            <img 
+              src={selectedVideo.thumbnail_url} 
+              alt={selectedVideo.title}
+              className="absolute inset-0 w-full h-full object-cover opacity-60"
+            />
+            {/* Cinematic Overlay Gradients */}
+            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-r from-zinc-950 via-zinc-950/20 to-transparent" />
             
-            {adminTab === 'content' && (hasPermission('MANAGE_UPLOADS') || hasPermission('UPLOAD_CONTENT')) && (
-              <>
-                <form onSubmit={handleAddVideo} className="space-y-6">
-                <div className="grid grid-cols-2 gap-6">
-                  <div className="space-y-1.5">
-                    <label className="text-[11px] text-brand-muted uppercase font-bold tracking-wider">Title</label>
-                    <input 
-                      required
-                      className="w-full bg-white/5 border border-white/10 rounded p-3 text-sm focus:border-brand-accent outline-none transition-colors"
-                      value={newVideo.title}
-                      onChange={e => setNewVideo({...newVideo, title: e.target.value})}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[11px] text-brand-muted uppercase font-bold tracking-wider">Category</label>
-                    <select 
-                      className="w-full bg-white/5 border border-white/10 rounded p-3 text-sm focus:border-brand-accent outline-none transition-colors appearance-none"
-                      value={newVideo.category}
-                      onChange={e => setNewVideo({...newVideo, category: e.target.value as Category})}
-                    >
-                      {categories.map(c => <option key={c} value={c} className="bg-brand-surface">{c}</option>)}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="text-[11px] text-brand-muted uppercase font-bold tracking-wider">Thumbnail Icon</label>
-                    <div className="relative group h-32 bg-white/5 border-2 border-dashed border-white/10 rounded-lg flex flex-col items-center justify-center transition-all hover:bg-white/10 hover:border-brand-accent/50">
-                      <input 
-                        type="file" 
-                        accept="image/*"
-                        onChange={e => setThumbnailFile(e.target.files?.[0] || null)}
-                        className="absolute inset-0 opacity-0 cursor-pointer"
-                        disabled={uploading}
-                      />
-                      {thumbnailFile ? (
-                        <div className="flex flex-col items-center gap-2">
-                          <CheckCircle2 className="w-8 h-8 text-green-500" />
-                          <span className="text-xs text-brand-muted truncate max-w-[150px]">{thumbnailFile.name}</span>
-                        </div>
-                      ) : (
-                        <>
-                          <Plus className="w-8 h-8 text-brand-muted group-hover:text-brand-accent mb-2" />
-                          <span className="text-xs text-brand-muted">Upload Thumbnail</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-[11px] text-brand-muted uppercase font-bold tracking-wider">Video File</label>
-                    <div className="relative group h-32 bg-white/5 border-2 border-dashed border-white/10 rounded-lg flex flex-col items-center justify-center transition-all hover:bg-white/10 hover:border-brand-accent/50">
-                      <input 
-                        type="file" 
-                        accept="video/*"
-                        onChange={e => setVideoFile(e.target.files?.[0] || null)}
-                        className="absolute inset-0 opacity-0 cursor-pointer"
-                        disabled={uploading}
-                      />
-                      {videoFile ? (
-                        <div className="flex flex-col items-center gap-2">
-                          <Film className="w-8 h-8 text-brand-accent" />
-                          <span className="text-xs text-brand-muted truncate max-w-[150px]">{videoFile.name}</span>
-                        </div>
-                      ) : (
-                        <>
-                          <Tv className="w-8 h-8 text-brand-muted group-hover:text-brand-accent mb-2" />
-                          <span className="text-xs text-brand-muted">Upload Movie/Anime</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[11px] text-brand-muted uppercase font-bold tracking-wider">Description</label>
-                  <textarea 
-                    className="w-full bg-white/5 border border-white/10 rounded p-3 text-sm focus:border-brand-accent outline-none transition-colors min-h-[100px]"
-                    value={newVideo.description}
-                    onChange={e => setNewVideo({...newVideo, description: e.target.value})}
-                    placeholder="Describe this content..."
-                  />
-                </div>
-
-                {uploading && (
-                  <div className="space-y-3 p-4 bg-black/40 rounded-lg border border-white/5">
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider">
-                        <span>Thumbnail Progress</span>
-                        <span>{Math.round(uploadProgress.thumbnail)}%</span>
-                      </div>
-                      <div className="h-1 w-full bg-white/10 rounded-full overflow-hidden">
-                        <div className="h-full bg-green-500 transition-all duration-300" style={{ width: `${uploadProgress.thumbnail}%` }} />
-                      </div>
-                    </div>
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-[10px] font-bold uppercase tracking-wider">
-                        <span>Video Upload Progress</span>
-                        <span>{Math.round(uploadProgress.video)}%</span>
-                      </div>
-                      <div className="h-1 w-full bg-white/10 rounded-full overflow-hidden">
-                        <div className="h-full bg-brand-accent transition-all duration-300" style={{ width: `${uploadProgress.video}%` }} />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex items-center gap-3 bg-white/5 p-4 rounded border border-white/5">
-                  <input 
-                    type="checkbox"
-                    id="premium"
-                    className="w-4 h-4 accent-brand-accent"
-                    checked={newVideo.isPremium}
-                    onChange={e => setNewVideo({...newVideo, isPremium: e.target.checked})}
-                  />
-                  <label htmlFor="premium" className="text-sm font-medium">Mark as Premium (Requires Ad to Unlock)</label>
-                </div>
-
-                <button 
-                  type="submit" 
-                  disabled={uploading}
-                  className={cn(
-                    "w-full py-4 rounded font-bold transition-all shadow-lg active:scale-[0.98]",
-                    uploading ? "bg-zinc-700 text-zinc-400 cursor-not-allowed" : "bg-brand-accent hover:bg-brand-accent/90"
-                  )}
+            {/* Film Spotlight Details */}
+            <div className="absolute bottom-6 left-6 md:bottom-12 md:left-12 right-6 space-y-4 max-w-2xl">
+              <span className="bg-blue-600 text-white px-2.5 py-1 rounded text-[10px] uppercase font-mono font-black tracking-widest">
+                {selectedVideo.category}
+              </span>
+              <h2 className="text-2xl md:text-5xl font-black tracking-tight leading-none font-serif">
+                {selectedVideo.title}
+              </h2>
+              <p className="text-zinc-300 text-xs md:text-sm leading-relaxed max-w-xl">
+                {selectedVideo.description}
+              </p>
+              
+              <div className="flex flex-wrap items-center gap-3 pt-2">
+                {/* Scroll directly to the Interactive Cinema Playback */}
+                <a 
+                  href="#cinema"
+                  onClick={() => setSelectedVideo(selectedVideo)}
+                  className="bg-white hover:bg-zinc-200 text-zinc-950 font-black px-6 py-2.5 rounded-full text-xs uppercase tracking-wider flex items-center gap-2 transform transition hover:scale-105"
                 >
-                  {uploading ? 'Uploading Files...' : 'Add Content'}
-                </button>
-              </form>
-
-              {/* Video List for Management */}
-              <div className="mt-12 space-y-4">
-                <h3 className="text-xs font-bold uppercase text-brand-muted tracking-widest">Managed Content</h3>
-                <div className="grid gap-3">
-                  {videos.map(v => {
-                    const canDelete = hasPermission('MANAGE_UPLOADS') || v.authorId === user?.uid;
-                    if (!canDelete) return null;
-                    
-                    return (
-                      <div key={v.id} className="flex items-center justify-between bg-white/5 p-3 rounded border border-white/5 hover:bg-white/[0.07] transition-colors">
-                        <div className="flex items-center gap-4">
-                          <img src={v.thumbnail} className="w-12 h-16 object-cover rounded" referrerPolicy="no-referrer" />
-                          <div>
-                            <p className="text-sm font-bold truncate max-w-[200px]">{v.title}</p>
-                            <p className="text-[10px] text-brand-muted uppercase font-bold tracking-tighter">{v.category}</p>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => handleDeleteVideo(v.id)}
-                          className="p-2 hover:bg-red-500/20 text-red-500 rounded transition-colors"
-                          title="Delete Video"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
+                  <Play className="w-4 h-4 fill-black" /> Begin Playback
+                </a>
+                <span className="text-zinc-500 text-xs font-mono">Duration: {selectedVideo.duration} • Liked by {selectedVideo.likes} Streamers</span>
               </div>
-            </>
-          )}
-
-            {adminTab === 'roles' && hasPermission('MANAGE_ROLES') && (
-              <div className="space-y-8">
-                <form onSubmit={handleSubmitRole} className="space-y-6 bg-black/20 p-6 rounded-lg border border-white/5 relative">
-                  {editingRoleId && (
-                    <div className="absolute top-4 right-4 flex items-center gap-2">
-                       <span className="text-[10px] bg-brand-accent/20 text-brand-accent px-2 py-0.5 rounded font-black uppercase tracking-widest">Editing</span>
-                       <button 
-                        type="button"
-                        onClick={() => {
-                          setEditingRoleId(null);
-                          setNewRole({ name: '', permissions: [], color: '#E50914' });
-                        }}
-                        className="text-zinc-500 hover:text-white transition-colors"
-                       >
-                         <X className="w-4 h-4" />
-                       </button>
-                    </div>
-                  )}
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-4">
-                      <div>
-                        <label className="text-[10px] text-brand-muted font-bold uppercase mb-1.5 block tracking-widest">Role Name</label>
-                        <input 
-                          value={newRole.name} 
-                          onChange={e => setNewRole({...newRole, name: e.target.value})}
-                          placeholder="e.g. Moderator"
-                          className="w-full bg-white/5 border border-white/10 rounded p-2.5 text-sm outline-none focus:border-brand-accent transition-all"
-                        />
-                      </div>
-                      
-                      <div>
-                        <label className="text-[10px] text-brand-muted font-bold uppercase mb-2 block tracking-widest">Role Color</label>
-                        <div className="flex flex-wrap gap-2 mb-3">
-                          {DEFAULT_ROLE_COLORS.map(c => (
-                            <button
-                              key={c}
-                              type="button"
-                              onClick={() => setNewRole({...newRole, color: c})}
-                              className={cn(
-                                "w-6 h-6 rounded-full border-2 transition-all hover:scale-110",
-                                newRole.color === c ? "border-white scale-110" : "border-transparent"
-                              )}
-                              style={{ backgroundColor: c }}
-                            />
-                          ))}
-                          <div className="relative group">
-                            <input 
-                              type="color"
-                              value={newRole.color}
-                              onChange={e => setNewRole({...newRole, color: e.target.value})}
-                              className="absolute inset-0 opacity-0 cursor-pointer"
-                            />
-                            <div 
-                              className={cn(
-                                "w-6 h-6 rounded-full border-2 transition-all flex items-center justify-center bg-gradient-to-tr from-red-500 via-green-500 to-blue-500",
-                                !DEFAULT_ROLE_COLORS.includes(newRole.color) ? "border-white scale-110" : "border-transparent"
-                              )}
-                            >
-                              <span className="text-[8px] font-black text-white">C</span>
-                            </div>
-                          </div>
-                        </div>
-                        <input 
-                          type="text"
-                          value={newRole.color}
-                          onChange={e => setNewRole({...newRole, color: e.target.value})}
-                          className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-[10px] font-mono outline-none focus:border-brand-accent uppercase"
-                          placeholder="#HEX"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] text-brand-muted font-bold uppercase mb-2 block tracking-widest">Permissions</label>
-                      <div className="grid grid-cols-1 gap-2">
-                        {(['MANAGE_UPLOADS', 'MANAGE_ROLES', 'ADMIN', 'UPLOAD_CONTENT'] as Permission[]).map(p => (
-                          <button
-                            key={p}
-                            type="button"
-                            onClick={() => {
-                              const perms = newRole.permissions.includes(p) 
-                                ? newRole.permissions.filter(x => x !== p)
-                                : [...newRole.permissions, p];
-                              setNewRole({...newRole, permissions: perms});
-                            }}
-                            className={cn(
-                              "flex items-center justify-between px-3 py-2 rounded text-xs transition-all border",
-                              newRole.permissions.includes(p) 
-                                ? "bg-brand-accent/10 border-brand-accent text-white" 
-                                : "bg-white/5 border-transparent text-brand-muted hover:bg-white/10"
-                            )}
-                          >
-                            <span className="font-bold">{p.replace('_', ' ')}</span>
-                            {newRole.permissions.includes(p) && <div className="w-1.5 h-1.5 bg-brand-accent rounded-full animate-pulse" />}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button type="submit" className="w-full bg-white text-brand-bg py-3 rounded font-black uppercase tracking-widest text-sm hover:bg-zinc-200 transition-all active:scale-[0.98]">
-                    {editingRoleId ? 'Update Role' : 'Create Role'}
-                  </button>
-                </form>
-
-                <div className="space-y-4">
-                  <h3 className="text-xs font-bold uppercase text-brand-muted tracking-widest flex items-center gap-2">
-                    <div className="w-4 h-[1px] bg-brand-muted/30" />
-                    Active Roles
-                  </h3>
-                  <div className="grid gap-3">
-                    {roles.map(role => (
-                      <div key={role.id} className="group flex items-center justify-between bg-brand-surface p-4 rounded border border-white/5 hover:border-white/10 transition-all shadow-lg overflow-hidden relative">
-                        <div className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: role.color }} />
-                        
-                        <div className="flex items-center gap-4">
-                          <div className="w-10 h-10 rounded bg-white/5 flex items-center justify-center">
-                             <Users className="w-5 h-5 text-brand-muted" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="font-bold text-white tracking-tight">{role.name}</p>
-                              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: role.color }} />
-                            </div>
-                            <div className="flex gap-1.5 mt-1.5">
-                              {role.permissions.map(p => (
-                                <span key={p} className="text-[9px] bg-white/5 px-1.5 py-0.5 rounded text-zinc-500 font-bold uppercase border border-white/5">
-                                  {p.replace('_', ' ')}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-
-                         <div className="flex items-center gap-2">
-                          <button 
-                            onClick={() => {
-                              setEditingRoleId(role.id);
-                              setNewRole({ name: role.name, permissions: role.permissions, color: role.color });
-                            }}
-                            className="p-2 text-zinc-500 hover:text-white transition-colors"
-                            title="Edit Role"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          
-                          <div className="relative">
-                            <button 
-                              onClick={() => {
-                                if (roleToDelete === role.id) {
-                                  handleDeleteRole(role.id);
-                                } else {
-                                  setRoleToDelete(role.id);
-                                  setTimeout(() => setRoleToDelete(null), 3000);
-                                }
-                              }} 
-                              className={cn(
-                                "p-2 transition-all flex items-center justify-center rounded",
-                                roleToDelete === role.id ? "bg-brand-accent text-white" : "text-zinc-500 hover:text-brand-accent"
-                              )}
-                              title="Delete Role"
-                            >
-                              {roleToDelete === role.id ? <CheckCircle2 className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
-                            </button>
-                            {roleToDelete === role.id && (
-                              <div className="absolute bottom-full right-0 mb-2 bg-brand-accent text-white text-[8px] font-black uppercase px-2 py-1 rounded whitespace-nowrap shadow-xl">
-                                Click again to confirm
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {adminTab === 'users' && hasPermission('MANAGE_ROLES') && (
-              <div className="space-y-4">
-                <div className="overflow-hidden bg-white/5 rounded-lg border border-white/5">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-black/40 text-[10px] uppercase font-bold text-brand-muted">
-                      <tr>
-                        <th className="px-6 py-3">Member</th>
-                        <th className="px-6 py-3">Current Roles</th>
-                        <th className="px-6 py-3 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {allUsers.map(u => (
-                        <tr key={u.uid} className="hover:bg-white/5 transition-colors">
-                          <td className="px-6 py-4 flex flex-col">
-                            <span className="font-bold">{u.email}</span>
-                            <span className="text-[10px] text-zinc-500 font-mono">{u.uid}</span>
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="flex flex-wrap gap-1">
-                              {u.roleIds?.length > 0 ? u.roleIds.map(rid => {
-                                const r = roles.find(x => x.id === rid);
-                                return (
-                                  <span 
-                                    key={rid} 
-                                    className="text-[9px] px-2 py-0.5 rounded font-black uppercase border"
-                                    style={{ 
-                                      backgroundColor: `${r?.color || '#333'}20`,
-                                      borderColor: `${r?.color || '#333'}40`,
-                                      color: r?.color || '#fff'
-                                    }}
-                                  >
-                                    {r?.name || 'Deleted'}
-                                  </span>
-                                );
-                              }) : <span className="text-[10px] text-zinc-600 italic">No Roles Assigned</span>}
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <button 
-                              onClick={() => setUserToEdit(u)}
-                              className="text-xs bg-white/5 hover:bg-white/10 px-3 py-1 rounded font-bold border border-white/10 transition-all"
-                            >
-                              Edit Roles
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
-          <>
-            {/* Hero Section (Featured) */}
-            {videos.length > 0 && !searchQuery && (
-              <div className="relative h-[280px] sm:h-[420px] w-full mb-8 sm:mb-12 flex items-center px-4 md:px-16 overflow-hidden sm:rounded-b-2xl">
-                <div 
-                  className="absolute inset-0 bg-cover bg-center transition-transform duration-10000 ease-linear transform hover:scale-110"
-                  style={{ backgroundImage: `url(${videos[0].thumbnail})` }}
-                />
-                <div className="absolute inset-0 bg-gradient-to-r from-brand-bg via-brand-bg/60 to-transparent" />
-                <div className="absolute inset-0 bg-gradient-to-t from-brand-bg via-transparent to-transparent" />
-                
-                <div className="relative max-w-xl space-y-6">
-                  <div className="space-y-1">
-                    <span className="text-brand-accent text-[11px] font-bold uppercase tracking-[2px]">Trending Now</span>
-                    <h2 className="text-5xl md:text-6xl font-black font-serif leading-[1.1]">{videos[0].title}</h2>
-                  </div>
-                  
-                  <div className="flex items-center gap-4 text-sm text-brand-muted">
-                    <span>2024</span>
-                    <span className="border border-brand-muted px-1.5 py-0.5 text-[10px] font-bold rounded-sm">HD</span>
-                    <span>Action & Sci-Fi</span>
-                    <span className="text-green-500 font-medium">98% Match</span>
-                  </div>
-
-                  <p className="text-brand-muted text-sm md:text-base line-clamp-2 max-w-md italic font-serif">
-                    {videos[0].description || "Experience high-definition streaming at its best. Watch the latest content exclusively on Streamo HD."}
-                  </p>
-
-                  <div className="flex items-center gap-3">
-                    <button 
-                      onClick={() => handleVideoSelect(videos[0])}
-                      className="flex items-center gap-2 bg-white text-brand-bg px-8 py-2.5 rounded font-bold hover:bg-zinc-200 transition-all shadow-lg"
-                    >
-                      <PlayCircle className="w-5 h-5 fill-brand-bg" />
-                      Play Now
-                    </button>
-                    <button className="flex items-center gap-2 bg-zinc-600/40 backdrop-blur-md text-white px-8 py-2.5 rounded font-bold border border-white/10 hover:bg-zinc-600/60 transition-all">
-                      + My List
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* My Library (Unlocked Videos) */}
-            {userProfile && userProfile.unlockedVideos.length > 0 && !searchQuery && (
-              <CategoryRow 
-                title="My Library"
-                videos={videos.filter(v => userProfile.unlockedVideos.includes(v.id))}
-                onSelect={handleVideoSelect}
-                unlockedVideos={userProfile.unlockedVideos}
-              />
-            )}
-
-            {/* Content Rows */}
-            <div className="space-y-8">
-              {searchQuery ? (
-                <div className="px-4 md:px-12">
-                  <h2 className="text-xl font-bold mb-6">Search Results for "{searchQuery}"</h2>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                    {filteredVideos.map(v => (
-                      <VideoCard 
-                        key={v.id} 
-                        video={v} 
-                        onSelect={handleVideoSelect}
-                        isUnlocked={userProfile?.unlockedVideos.includes(v.id)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                categories.map(cat => (
-                  <CategoryRow 
-                    key={cat}
-                    title={cat}
-                    videos={videos.filter(v => v.category === cat)}
-                    onSelect={handleVideoSelect}
-                    unlockedVideos={userProfile?.unlockedVideos || []}
-                  />
-                ))
-              )}
             </div>
-          </>
+          </section>
         )}
+
+        {/* Interactive Cinema Playback Stage */}
+        <section id="cinema" className="scroll-mt-24 bg-zinc-900/60 rounded-2xl border border-white/10 p-4 md:p-6 space-y-4">
+          <div className="flex items-center justify-between border-b border-white/5 pb-3">
+            <div className="flex items-center gap-2.5">
+              <Film className="w-5 h-5 text-blue-500" />
+              <span className="font-extrabold text-sm uppercase tracking-wider font-mono">Streamo Cinema Stage</span>
+            </div>
+            <div className="text-[10px] text-zinc-400 font-mono flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded bg-red-500 animate-pulse"></span> FULL ULTRA RESOLUTION CODES
+            </div>
+          </div>
+
+          {selectedVideo ? (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              {/* Custom High-Spec video player aspect */}
+              <div className="lg:col-span-2 relative bg-black rounded-xl overflow-hidden shadow-2xl border border-white/5">
+                <video 
+                  src={selectedVideo.video_url}
+                  controls
+                  autoPlay
+                  className="w-full aspect-video h-full object-cover"
+                  poster={selectedVideo.thumbnail_url}
+                />
+              </div>
+
+              {/* Video Bio Info panel */}
+              <div className="flex flex-col justify-between space-y-4 bg-zinc-950/60 p-5 rounded-xl border border-white/5">
+                <div className="space-y-3">
+                  <span className="text-blue-500 font-bold uppercase text-[9px] tracking-widest font-mono p-1 bg-blue-500/10 rounded">{selectedVideo.category}</span>
+                  <h3 className="text-xl font-bold tracking-tight">{selectedVideo.title}</h3>
+                  <p className="text-zinc-400 text-xs leading-relaxed">{selectedVideo.description}</p>
+                </div>
+
+                <div className="pt-4 border-t border-white/5 space-y-3">
+                  <div className="flex items-center justify-between text-xs font-medium">
+                    <span className="text-zinc-400">Database Source</span>
+                    <span className="font-bold text-zinc-300">{isDemoMode ? 'Local Simulation' : 'Supabase Storage'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs font-medium">
+                    <span className="text-zinc-400">Video Payload</span>
+                    <span className="font-mono text-zinc-300 text-[10px]">mp4 stream link</span>
+                  </div>
+                  
+                  {/* Quick option to set as App Featured video */}
+                  <button 
+                    onClick={() => {
+                        const updated = videos.map(v => v.id === selectedVideo.id ? { ...v, likes: v.likes + 1 } : v);
+                        setVideos(updated);
+                        setSelectedVideo({ ...selectedVideo, likes: selectedVideo.likes + 1 });
+                    }}
+                    className="w-full bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/10 transition py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5"
+                  >
+                    ❤️ Love this stream ({selectedVideo.likes} Likes)
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-20 text-zinc-500">
+              <Play className="w-12 h-12 mx-auto mb-3 opacity-30 text-blue-500" />
+              <p className="font-semibold text-sm">Please select a video below to load Streamo HD playhouse.</p>
+            </div>
+          )}
+        </section>
+
+        {/* --- Video Grid Rows --- */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between border-b border-white/5 pb-2">
+            <h4 className="text-lg font-black tracking-wider uppercase font-serif flex items-center gap-2">
+              <Grid className="w-4.5 h-4.5 text-blue-500" /> Cinema Explorer 
+            </h4>
+            
+            {/* Category Filter Pills */}
+            <div className="flex items-center gap-2 overflow-x-auto py-1">
+              {categories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition ${
+                    selectedCategory === cat 
+                      ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' 
+                      : 'bg-zinc-900 text-zinc-400 hover:text-white hover:bg-zinc-800'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Videos Grid List */}
+          {filteredVideos.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+              {filteredVideos.map(video => (
+                <div 
+                  key={video.id}
+                  onClick={() => setSelectedVideo(video)}
+                  className={`bg-zinc-900 rounded-xl overflow-hidden border transition transform hover:scale-[1.03] hover:-translate-y-1 cursor-pointer flex flex-col justify-between ${
+                    selectedVideo?.id === video.id ? 'border-blue-500 shadow-xl shadow-blue-500/10' : 'border-white/5'
+                  }`}
+                >
+                  <div className="relative aspect-video bg-zinc-800 group">
+                    <img 
+                      src={video.thumbnail_url} 
+                      alt={video.title} 
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <Play className="w-10 h-10 text-white fill-white scale-90 group-hover:scale-100 transition-transform" />
+                    </div>
+                    <span className="absolute bottom-2 right-2 bg-black/80 px-2 py-0.5 rounded text-[9px] font-mono tracking-wider font-bold">
+                      {video.duration}
+                    </span>
+                  </div>
+                  
+                  <div className="p-4 space-y-2 flex-grow flex flex-col justify-between">
+                    <div>
+                      <span className="text-[9px] font-black uppercase tracking-widest font-mono text-blue-400 block mb-1">
+                        {video.category}
+                      </span>
+                      <h5 className="font-extrabold text-xs line-clamp-1">{video.title}</h5>
+                      <p className="text-[10px] text-zinc-400 line-clamp-2 mt-1 font-medium">{video.description}</p>
+                    </div>
+                    <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+                      <span>🎬 Cinema Engine</span>
+                      <span>❤️ {video.likes} likes</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-16 bg-zinc-900/40 rounded-xl border border-white/5">
+              <FolderMinus className="w-10 h-10 text-zinc-600 mx-auto mb-2" />
+              <p className="text-zinc-500 text-xs font-semibold">No streaming videos found in this category or search.</p>
+            </div>
+          )}
+        </section>
       </main>
 
-      {/* Overlays */}
-      {selectedVideo && (
-        <VideoPlayer 
-          src={selectedVideo.videoUrl}
-          title={selectedVideo.title}
-          videoId={selectedVideo.id}
-          currentUser={user}
-          onClose={() => setSelectedVideo(null)}
-          onViewProfile={(profile) => setViewingProfile(profile)}
-        />
-      )}
+      {/* --- APK DOWNLOAD MODAL & ASSIST CENTER --- */}
+      {showApkGuide && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-2xl w-full p-6 md:p-8 space-y-6 shadow-2xl relative overflow-hidden animate-in fade-in-50 zoom-in-95 duration-200">
+            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-indigo-500"></div>
+            
+            <button 
+              onClick={() => setShowApkGuide(false)}
+              className="absolute top-5 right-5 text-zinc-400 hover:text-white transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
 
-      {showAdFor && (
-        <MockAd 
-          onComplete={handleAdComplete}
-          onClose={() => setShowAdFor(null)}
-        />
-      )}
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-blue-500/10 rounded-xl border border-blue-500/20 text-blue-400 inline-block">
+                <Smartphone className="w-8 h-8" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-2xl font-black tracking-tight font-serif">Native Android APK Hub</h3>
+                <p className="text-xs text-zinc-400">Direct compile production & fast deployment for handheld devices.</p>
+              </div>
+            </div>
 
-      {/* Auth Modal */}
-      {showAuthModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/90 backdrop-blur-md" onClick={() => setShowAuthModal(false)} />
-          <div className="relative w-full max-w-sm bg-brand-surface border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="p-8 text-center space-y-6">
-              <div className="space-y-2">
-                <h1 className="text-brand-accent text-3xl font-black font-serif tracking-tight uppercase">
-                  Streamo<span className="text-white">HD</span>
-                </h1>
-                <h3 className="text-xl font-bold">{authMode === 'signin' ? 'Welcome Back' : 'Create Account'}</h3>
-                <p className="text-xs text-brand-muted">
-                  {authMode === 'signin' 
-                    ? 'Sign in to access premium content and manage your profile.' 
-                    : 'Join StreamoHD to start your cinematic journey.'}
-                </p>
+            <div className="bg-zinc-950 p-5 rounded-xl border border-white/5 space-y-4">
+              <div className="flex items-center justify-between text-xs pb-3 border-b border-white/5">
+                <span className="text-zinc-400">Android Build Engine</span>
+                <span className="font-mono text-emerald-400 font-bold flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-ping"></span> 
+                  ACTIVE COMPILATION SUCCESS
+                </span>
               </div>
 
-              <form onSubmit={handleAuth} className="space-y-4 text-left">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Email Address</label>
-                  <input 
-                    type="email"
-                    required
-                    className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm focus:border-brand-accent outline-none transition-all"
-                    placeholder="name@example.com"
-                    value={authForm.email}
-                    onChange={e => setAuthForm({...authForm, email: e.target.value})}
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Password</label>
-                  <input 
-                    type="password"
-                    required
-                    minLength={6}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-sm focus:border-brand-accent outline-none transition-all"
-                    placeholder="Min. 6 characters"
-                    value={authForm.password}
-                    onChange={e => setAuthForm({...authForm, password: e.target.value})}
-                  />
-                </div>
-
-                {authError && (
-                  <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-                    <p className="text-[10px] text-red-500 font-bold text-center">{authError}</p>
+              <div className="space-y-3">
+                <div className="flex justify-between items-center bg-zinc-900 p-3 rounded border border-white/5">
+                  <div className="flex items-center gap-2.5">
+                    <Video className="w-5 h-5 text-blue-500" />
+                    <div>
+                      <p className="text-xs font-bold text-white">streamohd-debug.apk</p>
+                      <p className="text-[10px] text-zinc-500 font-mono">Platform target: Android 10+ (API 29 to 36)</p>
+                    </div>
                   </div>
-                )}
-
-                <button 
-                  disabled={authLoading}
-                  className="w-full bg-brand-accent hover:bg-brand-accent/90 py-3.5 rounded-xl font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20 flex items-center justify-center gap-2"
-                >
-                  {authLoading ? (
-                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <>
-                      <LogIn className="w-4 h-4" />
-                      <span>{authMode === 'signin' ? 'Sign In' : 'Sign Up'}</span>
-                    </>
-                  )}
-                </button>
-              </form>
-
-              <div className="pt-4 border-t border-white/5">
-                <p className="text-xs text-brand-muted">
-                  {authMode === 'signin' ? "Don't have an account?" : "Already have an account?"}
-                  <button 
-                    onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')}
-                    className="ml-2 text-brand-accent font-bold hover:underline"
+                  {/* Download button */}
+                  <a 
+                    href="/apk/streamohd-debug.apk" 
+                    download="streamohd-debug.apk"
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-[10px] uppercase tracking-wider py-2 px-4 rounded transition shadow-lg shadow-blue-600/30"
                   >
-                    {authMode === 'signin' ? 'Sign Up' : 'Sign In'}
-                  </button>
-                </p>
+                    Download APK
+                  </a>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Public Profile View Modal */}
-      {viewingProfile && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/95 backdrop-blur-2xl" onClick={() => setViewingProfile(null)} />
-          <div className="relative w-full max-w-sm bg-brand-surface border border-white/10 rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="p-8 flex flex-col items-center">
+            <div className="space-y-3">
+              <h4 className="text-xs font-black uppercase tracking-wider text-zinc-300">Fast APK Installation steps:</h4>
+              <ol className="text-xs text-zinc-400 space-y-2 list-decimal list-inside leading-relaxed">
+                <li>Click the <b className="text-white">Download APK</b> button to save the Android installer to your device.</li>
+                <li>Open the downloaded <span className="text-white font-mono text-[11px] bg-white/5 px-1 py-0.5 rounded">streamohd-debug.apk</span> on your phone.</li>
+                <li>If prompted, enable <span className="text-blue-400">"Allow installation from Unknown sources"</span> in settings.</li>
+                <li>Complete the installer, launch <b className="text-white">Streamo HD</b>, and connect to your streaming Database!</li>
+              </ol>
+            </div>
+
+            <div className="flex items-center gap-2 justify-end border-t border-white/5 pt-4">
               <button 
-                onClick={() => setViewingProfile(null)}
-                className="absolute top-4 right-4 p-2 text-brand-muted hover:text-white transition-colors"
+                onClick={() => setShowApkGuide(false)}
+                className="bg-zinc-800 hover:bg-zinc-700 text-white px-5 py-2.5 rounded-lg text-xs font-bold"
               >
-                <X className="w-5 h-5" />
+                Close Hub
               </button>
-
-              <div className="w-32 h-32 rounded-full bg-brand-accent/10 border-4 border-white/5 overflow-hidden shadow-2xl mb-6">
-                {viewingProfile.avatarUrl ? (
-                  <img src={viewingProfile.avatarUrl} alt={viewingProfile.displayName} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-4xl font-black text-brand-accent uppercase">
-                    {viewingProfile.displayName?.[0] || viewingProfile.email?.[0]}
-                  </div>
-                )}
-              </div>
-
-              <div className="text-center space-y-4 w-full">
-                <div className="space-y-1">
-                  <h3 className="text-2xl font-black italic font-serif tracking-tighter">{viewingProfile.displayName || "Unknown User"}</h3>
-                  {viewingProfile.username && (
-                    <p className="text-brand-accent text-xs font-bold tracking-widest uppercase">@{viewingProfile.username}</p>
-                  )}
-                </div>
-
-                <div className="py-4 border-y border-white/5">
-                   <p className="text-xs text-brand-muted uppercase font-black tracking-widest mb-1">Cinematic Bio</p>
-                   <div className="max-h-48 overflow-y-auto scrollbar-hide">
-                      <p className="text-sm text-zinc-300 leading-relaxed italic whitespace-pre-wrap">
-                        {viewingProfile.bio || "This user hasn't written their cinematic story yet."}
-                      </p>
-                   </div>
-                </div>
-
-                <button 
-                  onClick={() => setViewingProfile(null)}
-                  className="w-full bg-white/5 hover:bg-white/10 py-3 rounded-xl text-xs font-bold uppercase tracking-widest transition-all"
-                >
-                  Close Profile
-                </button>
-              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Edit Profile Modal */}
-      {showEditProfile && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/95 backdrop-blur-xl" onClick={() => !isUpdatingProfile && setShowEditProfile(false)} />
-          <div className="relative w-full max-w-md max-h-[90vh] bg-brand-surface border border-white/10 rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col">
-            <div className="flex-1 overflow-y-auto p-5 sm:p-8 text-center space-y-6 sm:space-y-8 scrollbar-hide">
-              <div className="space-y-2 sticky top-0 bg-brand-surface pt-1 z-10 pb-4 border-b border-white/5">
-                <h3 className="text-2xl font-black italic font-serif tracking-tighter uppercase">Edit <span className="text-brand-accent">Identity</span></h3>
-                <p className="text-[10px] text-brand-muted uppercase tracking-[0.2em] font-bold">Cinematic Presence Profile</p>
+      {/* --- SQL SCHEMA MODAL --- */}
+      {showSQLModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-2xl w-full p-6 md:p-8 space-y-6 shadow-2xl relative overflow-hidden animate-in fade-in-50 zoom-in-95 duration-200">
+            
+            <button 
+              onClick={() => setShowSQLModal(false)}
+              className="absolute top-5 right-5 text-zinc-400 hover:text-white transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-cyan-500/10 rounded-xl border border-cyan-500/20 text-cyan-400 inline-block">
+                <Database className="w-8 h-8" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-2xl font-black tracking-tight font-serif">Supabase SQL Editor Schema</h3>
+                <p className="text-xs text-zinc-400">Copy this code block to setup Database tables, storage, and rules.</p>
+              </div>
+            </div>
+
+            <div className="relative">
+              <pre className="bg-zinc-950 border border-white/10 rounded-xl p-4 text-[10px] text-zinc-300 font-mono h-60 overflow-y-auto leading-relaxed select-all">
+                {INITIAL_SQL}
+              </pre>
+              <button 
+                onClick={handleCopySQL}
+                className="absolute top-3 right-3 bg-zinc-800 hover:bg-zinc-700 text-white p-2 rounded border border-white/10 text-xs flex items-center gap-1 transition-all"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copied ? 'Copied' : 'Copy SQL'}</span>
+              </button>
+            </div>
+
+            <div className="bg-zinc-950 p-4 border border-white/5 rounded-xl flex items-start gap-3 text-xs text-zinc-400">
+              <p><b>Important Guard:</b> Running this SQL ensures your tables have the columns <span className="text-cyan-400 font-mono">"roleIds"</span> and <span className="text-cyan-400 font-mono">"unlockedVideos"</span>, plus the <span className="text-cyan-400 font-mono">media</span> bucket initialized properly for stream uploads.</p>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-white/5">
+              <button 
+                onClick={() => setShowSQLModal(false)}
+                className="bg-zinc-800 hover:bg-zinc-700 text-white px-5 py-2.5 rounded-lg text-xs font-bold"
+              >
+                Done
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* --- DATABASE CONFIG MODAL --- */}
+      {showConfigModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-md w-full p-6 md:p-8 space-y-6 shadow-2xl relative overflow-hidden animate-in fade-in-50 zoom-in-95 duration-200">
+            
+            <button 
+              onClick={() => setShowConfigModal(false)}
+              className="absolute top-5 right-5 text-zinc-400 hover:text-white transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-2">
+              <h3 className="text-2xl font-black tracking-tight font-serif uppercase">Database Connector</h3>
+              <p className="text-xs text-zinc-400">Integrate real Supabase capabilities for live user uploads, stream saves, and roles.</p>
+            </div>
+
+            <form onSubmit={handleSaveConfig} className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-bold block">Supabase URL</label>
+                <input 
+                  type="url" 
+                  value={supabaseUrl} 
+                  onChange={(e) => setSupabaseUrl(e.target.value)}
+                  placeholder="https://yourproject.supabase.co"
+                  className="w-full bg-zinc-950 border border-white/10 rounded-lg p-3 text-xs font-mono text-white focus:outline-none focus:border-blue-500 transition-colors"
+                />
               </div>
 
-              <form onSubmit={handleUpdateProfile} className="space-y-6 text-left">
-                {/* Avatar Section */}
-                <div className="flex flex-col items-center gap-4 py-2">
-                   <div className="relative group">
-                     <div className="w-24 h-24 rounded-full bg-brand-accent/10 border-2 border-white/10 overflow-hidden shadow-2xl transition-all group-hover:border-brand-accent">
-                       {avatarFile || editProfileForm.avatarUrl ? (
-                         <img 
-                           src={avatarFile ? URL.createObjectURL(avatarFile) : editProfileForm.avatarUrl} 
-                           alt="Preview" 
-                           className="w-full h-full object-cover"
-                         />
-                       ) : (
-                         <div className="w-full h-full flex items-center justify-center text-3xl font-black text-brand-accent uppercase">
-                           {editProfileForm.displayName?.[0] || user?.email?.[0]}
-                         </div>
-                       )}
-                     </div>
-                     <label className="absolute inset-0 flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer rounded-full">
-                       <Plus className="w-8 h-8 text-white" />
-                       <input 
-                         type="file" 
-                         accept="image/*" 
-                         className="hidden" 
-                         onChange={(e) => {
-                           const file = e.target.files?.[0];
-                           if (file) setAvatarFile(file);
-                         }} 
-                       />
-                     </label>
-                   </div>
-                   <p className="text-[9px] text-brand-muted uppercase font-bold tracking-widest">Tap to change profile picture (1:1 recommended)</p>
+              <div className="space-y-2">
+                <label className="text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-bold block">Supabase Anon Key</label>
+                <input 
+                  type="text" 
+                  value={supabaseKey} 
+                  onChange={(e) => setSupabaseKey(e.target.value)}
+                  placeholder="your_anon_public_key..."
+                  className="w-full bg-zinc-950 border border-white/10 rounded-lg p-3 text-xs font-mono text-white focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+
+              {connError && (
+                <div className="p-3 bg-red-600/10 border border-red-500/20 rounded text-[10px] text-red-400 font-mono leading-relaxed">
+                  {connError}
                 </div>
+              )}
 
-                <div className="grid gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Display Name</label>
-                    <input 
-                      type="text"
-                      required
-                      placeholder="Your choice name..."
-                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-sm focus:border-brand-accent outline-none transition-all"
-                      value={editProfileForm.displayName}
-                      onChange={e => setEditProfileForm({ ...editProfileForm, displayName: e.target.value })}
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between">
-                      <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Username</label>
-                      <span className="text-[8px] text-brand-accent uppercase font-bold tracking-widest">lowercase_only_</span>
-                    </div>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted text-sm font-bold">@</span>
-                      <input 
-                        type="text"
-                        placeholder="unique_handle"
-                        className="w-full bg-white/5 border border-white/10 rounded-xl py-3 pl-8 pr-3 text-sm focus:border-brand-accent outline-none transition-all placeholder:text-zinc-700"
-                        value={editProfileForm.username}
-                        onChange={e => setEditProfileForm({ ...editProfileForm, username: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') })}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between">
-                      <label className="text-[10px] text-brand-muted uppercase font-bold tracking-wider">Description (Bio)</label>
-                      <span className={cn(
-                        "text-[8px] font-bold tracking-widest",
-                        editProfileForm.bio.length > 5000 ? "text-red-500" : "text-brand-muted"
-                      )}>
-                        {editProfileForm.bio.length} / 5000
-                      </span>
-                    </div>
-                    <textarea 
-                      rows={4}
-                      placeholder="Tell your cinematic story..."
-                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-sm focus:border-brand-accent outline-none transition-all resize-none scrollbar-hide"
-                      value={editProfileForm.bio}
-                      onChange={e => setEditProfileForm({ ...editProfileForm, bio: e.target.value.slice(0, 5000) })}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex gap-4 pt-4 sticky bottom-0 bg-brand-surface border-t border-white/5 pb-2 mt-4 z-10">
+              <div className="flex gap-2.5 pt-3">
+                <button 
+                  type="submit"
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg text-xs uppercase tracking-wider transition-colors shadow-lg shadow-blue-600/20"
+                >
+                  Apply Connections
+                </button>
+                {isDBConnected && (
                   <button 
                     type="button"
-                    disabled={isUpdatingProfile}
-                    onClick={() => setShowEditProfile(false)}
-                    className="flex-1 px-4 py-3.5 rounded-2xl border border-white/10 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
+                    onClick={handleDisconnect}
+                    className="bg-red-950 hover:bg-red-900 border border-red-500/30 text-red-200 font-bold px-4 rounded-lg text-xs uppercase tracking-wider transition-colors"
                   >
-                    Cancel
+                    Disconnect
                   </button>
-                  <button 
-                    type="submit"
-                    disabled={isUpdatingProfile}
-                    className="flex-1 bg-brand-accent hover:bg-brand-accent/90 py-3.5 rounded-2xl font-black uppercase text-xs tracking-widest transition-all shadow-lg shadow-brand-accent/20 flex items-center justify-center gap-2"
-                  >
-                    {isUpdatingProfile ? (
-                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      "Save Changes"
-                    )}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* User Role Editing Modal */}
-      {userToEdit && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setUserToEdit(null)} />
-          <div className="relative w-full max-w-md bg-brand-surface border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-6 border-b border-white/5 flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-bold">Manage Roles</h3>
-                <p className="text-[10px] text-brand-muted uppercase tracking-widest font-bold mt-0.5">{userToEdit.email}</p>
+                )}
               </div>
-              <button 
-                onClick={() => setUserToEdit(null)}
-                className="p-2 text-zinc-500 hover:text-white transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <div className="p-6 space-y-4">
-              <div className="space-y-2">
-                <label className="text-[10px] text-brand-muted font-bold uppercase tracking-widest">Assign Roles</label>
-                <div className="grid gap-2">
-                  {roles.map(role => {
-                    const isAssigned = userToEdit.roleIds?.includes(role.id);
-                    return (
-                      <button
-                        key={role.id}
-                        onClick={() => {
-                          const newRoleIds = isAssigned
-                            ? userToEdit.roleIds.filter(id => id !== role.id)
-                            : [...(userToEdit.roleIds || []), role.id];
-                          
-                          setUserToEdit({ ...userToEdit, roleIds: newRoleIds });
-                        }}
-                        className={cn(
-                          "flex items-center justify-between p-3 rounded-lg border transition-all text-left",
-                          isAssigned 
-                            ? "bg-white/5 border-white/20" 
-                            : "bg-transparent border-white/5 hover:bg-white/5 text-brand-muted"
-                        )}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: role.color }} />
-                          <span className="text-sm font-bold">{role.name}</span>
-                        </div>
-                        {isAssigned && <CheckCircle2 className="w-4 h-4 text-brand-accent animate-in fade-in" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
+            </form>
 
-            <div className="p-6 bg-black/20 flex gap-3">
+            <div className="border-t border-white/5 pt-4 text-center">
               <button 
-                onClick={() => setUserToEdit(null)}
-                className="flex-1 px-4 py-2 rounded text-xs font-bold text-zinc-400 hover:text-white transition-colors"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={async () => {
-                  await handleUpdateUserRoles(userToEdit.uid, userToEdit.roleIds);
-                  setUserToEdit(null);
+                type="button"
+                onClick={() => {
+                  setIsDemoMode(true);
+                  setShowConfigModal(false);
                 }}
-                className="flex-1 bg-brand-accent px-4 py-2 rounded text-xs font-bold hover:bg-brand-accent/90 transition-all shadow-lg shadow-brand-accent/20"
+                className="text-xs text-blue-400 hover:text-blue-300 font-black tracking-wide uppercase transition-colors"
               >
-                Save Permissions
+                Keep working in offline demo mode
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* --- VIDEO UPLOAD MODAL --- */}
+      {showUploadModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl max-w-lg w-full p-6 md:p-8 space-y-6 shadow-2xl relative overflow-hidden animate-in fade-in-50 zoom-in-95 duration-200">
+            
+            <button 
+              onClick={() => setShowUploadModal(false)}
+              className="absolute top-5 right-5 text-zinc-400 hover:text-white transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-blue-500/10 rounded-xl border border-blue-500/20 text-blue-400 inline-block animate-pulse">
+                <Upload className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-xl font-black tracking-tight font-serif uppercase">Upload Video Stream</h3>
+                <p className="text-xs text-zinc-400">{isDemoMode ? 'Demo Studio: Instantly add mock video coordinates' : 'Real Database Studio: Saving streams to Supabase media bucket'}</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleMockUpload} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-bold block">Video Title *</label>
+                  <input 
+                    type="text" 
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    placeholder="Cosmic Nebula Journey"
+                    required
+                    className="w-full bg-zinc-950 border border-white/10 rounded-lg p-3 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-bold block">Category</label>
+                  <select 
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value)}
+                    className="w-full bg-zinc-950 border border-white/10 rounded-lg p-3 text-xs text-white focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="Sci-Fi">Sci-Fi</option>
+                    <option value="Action">Action</option>
+                    <option value="Nature">Nature</option>
+                    <option value="Drama">Drama</option>
+                    <option value="General">General</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-bold block">Stream Video URL *</label>
+                <input 
+                  type="url" 
+                  value={newVideoUrl}
+                  onChange={(e) => setNewVideoUrl(e.target.value)}
+                  placeholder="https://assets.mixkit.co/videos/...mp4"
+                  required
+                  className="w-full bg-zinc-950 border border-white/10 rounded-lg p-3 text-xs font-mono text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-bold block">Cover Image URL *</label>
+                <input 
+                  type="url" 
+                  value={newThumb}
+                  onChange={(e) => setNewThumb(e.target.value)}
+                  placeholder="https://unsplash.com/photo-..."
+                  required
+                  className="w-full bg-zinc-950 border border-white/10 rounded-lg p-3 text-xs font-mono text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] uppercase font-mono tracking-wider text-zinc-400 font-bold block">Description</label>
+                <textarea 
+                  value={newDesc}
+                  onChange={(e) => setNewDesc(e.target.value)}
+                  placeholder="Write a custom description details..."
+                  rows={2}
+                  className="w-full bg-zinc-950 border border-white/10 rounded-lg p-3 text-xs text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {uploadMessage && (
+                <div className={`p-3 rounded text-[10px] font-mono leading-relaxed border ${
+                  uploadMessage.type === 'success' 
+                    ? 'bg-emerald-600/10 border-emerald-500/20 text-emerald-400' 
+                    : 'bg-red-600/10 border-red-500/20 text-red-400'
+                }`}>
+                  {uploadMessage.text}
+                </div>
+              )}
+
+              <div className="flex gap-2.5 pt-2">
+                <button 
+                  type="submit"
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg text-xs uppercase tracking-wider transition-all"
+                >
+                  Publish Video
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => setShowUploadModal(false)}
+                  className="bg-zinc-800 hover:bg-zinc-700 text-white font-bold px-5 rounded-lg text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- Footer Accent --- */}
+      <footer className="border-t border-white/5 py-8 px-4 md:px-10 text-center text-zinc-500 text-sm space-y-4 bg-zinc-950">
+        <p>© 2026 Streamo HD • Built fully Native-compatible with high-fidelity streaming engines.</p>
+        <div className="flex justify-center gap-6 text-[10px] uppercase font-mono tracking-wider">
+          <button onClick={() => setShowApkGuide(true)} className="hover:text-white transition">Native App APK</button>
+          <span>•</span>
+          <button onClick={() => setShowSQLModal(true)} className="hover:text-white transition">Database Setup SQL</button>
+          <span>•</span>
+          <button onClick={() => setShowConfigModal(true)} className="hover:text-white transition">Supabase Configuration</button>
+        </div>
+      </footer>
     </div>
   );
 }

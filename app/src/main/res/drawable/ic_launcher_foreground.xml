@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Play button triangle behind S -->
+    <path
+        android:fillColor="#3b82f6"
+        android:pathData="M35,28 L80,54 L35,80 Z" />
+    <!-- Letter S in foreground -->
+    <path
+        android:fillColor="#ffffff"
+        android:pathData="M54,15 C44.57,15 36.64,18.78 36.64,28 L45.64,28 C45.64,23.78 49.57,21.5 54,21.5 C58.43,21.5 61.36,23.78 61.36,27 C61.36,33.14 36.64,32.78 36.64,48.5 C36.64,57.78 44.57,61.5 54,61.5 C63.43,61.5 71.36,57.78 71.36,48.5 L62.36,48.5 C62.36,52.78 58.43,55 54,55 C49.57,55 46.64,52.78 46.64,49.5 C46.64,43.36 71.36,43 71.36,27.5 C71.36,18.22 63.43,15 54,15 Z" />
+</vector>

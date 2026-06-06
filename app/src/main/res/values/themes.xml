@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.StreamoHD" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Primary brand color. -->
+        <item name="android:colorPrimary">#09090b</item>
+        <item name="android:statusBarColor">#09090b</item>
+    </style>
+</resources>

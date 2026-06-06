@@ -1,1 +1,0 @@
-# App Assets Source Directory

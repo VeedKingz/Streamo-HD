@@ -1,6 +1,12 @@
 {
   "name": "Streamo HD",
-  "description": "Professional HD video streaming platform for Movies, Anime, and Web Series with a premium dark theme and smooth playback controls.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
+  "description": "Premium Video Streaming Android App & Web Portal",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

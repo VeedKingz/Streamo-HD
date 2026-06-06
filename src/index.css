@@ -1,26 +1,37 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;900&display=swap');
 @import "tailwindcss";
 
-@theme {
-  --color-brand-bg: #050505;
-  --color-brand-surface: #121212;
-  --color-brand-accent: #E50914;
-  --color-brand-muted: #A0A0A0;
-  
-  --font-serif: "Georgia", serif;
-  --font-sans: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-@layer utilities {
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
-  }
-  .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
+:root {
+  --color-brand-bg: #09090b;
+  --color-brand-surface: #18181b;
+  --color-brand-accent: #3b82f6;
+  --color-brand-accent-hover: #2563eb;
+  --color-brand-muted: #a1a1aa;
 }
 
 body {
-  @apply bg-brand-bg text-white font-sans;
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-brand-bg);
+  color: #ffffff;
+  font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
 }
